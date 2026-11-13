@@ -238,6 +238,16 @@ curl -X POST http://localhost:8000/api/v1/chat \
 
 Configuration is entirely environment-driven (`app/core/config.py`); `.env.example` documents every variable. Secrets live in `.env`, which is not committed.
 
+## Tests
+
+```bash
+uv run pytest                    # unit tests — no network, no database
+uv run pytest -m integration     # against the local PostgreSQL and Redis
+uv run pytest -m model           # downloads and runs the real embedding model
+```
+
+The default run excludes the last two. The embedding model (~90 MB) is fetched from HuggingFace on first use and cached; the suite never needs it because the unit tests run against a fake model. It runs on the GPU when one is available and falls back to CPU otherwise.
+
 ## Design decisions
 
 A few choices worth defending in a review:
