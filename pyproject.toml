@@ -42,6 +42,12 @@ warn_unused_ignores = true
 module = ["sentence_transformers.*", "qdrant_client.*", "fitz", "pymupdf.*"]
 ignore_missing_imports = true
 
+# PyMuPDF ships a py.typed marker but leaves most of its API unannotated;
+# skip it rather than sprinkle disallow_untyped_calls exceptions.
+[[tool.mypy.overrides]]
+module = ["pymupdf", "pymupdf.*"]
+follow_imports = "skip"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
