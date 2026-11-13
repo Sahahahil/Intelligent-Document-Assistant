@@ -10,6 +10,7 @@ exponential backoff, and never retries a 4xx like 400.
 import json
 import logging
 from collections.abc import Sequence
+from datetime import datetime
 from functools import lru_cache
 from typing import Any, Literal, TypeVar
 
@@ -39,10 +40,15 @@ _PLACEHOLDER_KEY = "not-configured"
 
 
 class ChatMessage(BaseModel):
-    """One message in a conversation."""
+    """One message in a conversation.
+
+    `created_at` is stamped by the conversation store (T13); the LLM client
+    ignores it.
+    """
 
     role: Role
     content: str
+    created_at: datetime | None = None
 
 
 def _to_param(message: ChatMessage) -> ChatCompletionMessageParam:

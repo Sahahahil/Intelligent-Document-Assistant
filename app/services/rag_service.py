@@ -6,11 +6,11 @@ Written out by hand — no LangChain, no `RetrievalQAChain`.
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
 from uuid import UUID
 
 from app.integrations.llm import ChatMessage, LLMClient
 from app.integrations.qdrant import RetrievedChunk
+from app.services.query_rewriter import QueryRewriter
 from app.services.retrieval_service import RetrievalService, SourceReference
 
 logger = logging.getLogger(__name__)
@@ -38,16 +38,6 @@ MAX_CONTEXT_CHARS = 8000
 ANSWER_TEMPERATURE = 0.2
 
 NO_CONTEXT = "(no relevant context was found in the document collection)"
-
-
-class QueryRewriter(Protocol):
-    """Rewrites a follow-up into a standalone query.
-
-    T14 implements it. The service works without one - then the original
-    message is used as the retrieval query.
-    """
-
-    async def rewrite(self, message: str, history: Sequence[ChatMessage]) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
