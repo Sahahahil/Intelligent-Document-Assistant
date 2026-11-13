@@ -53,8 +53,11 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["."]
 testpaths = ["tests"]
-markers = ["integration: requires the local PostgreSQL and Redis services"]
-addopts = "-m 'not integration'"
+markers = [
+    "integration: requires the local PostgreSQL and Redis services",
+    "model: downloads and runs the real sentence-transformers model",
+]
+addopts = "-m 'not integration and not model'"
 
 [dependency-groups]
 dev = [
