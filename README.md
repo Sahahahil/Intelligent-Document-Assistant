@@ -7,8 +7,6 @@ Two REST APIs, built on FastAPI:
 1. **Document Ingestion** — upload a `.pdf` / `.txt`, extract text, chunk it with a selectable strategy, embed it, store vectors in Qdrant and metadata in PostgreSQL.
 2. **Conversational RAG** — ask questions across your documents with multi-turn memory in Redis, and book an interview by just talking to it.
 
-> **Status:** design phase. The implementation plan lives in [`/spec`](.claude/spec/README.md), [`/plan`](.claude/plan/README.md) and [`/qa`](.claude/qa/README.md). Nothing in this README is claimed to be working yet.
-
 ---
 
 ## Table of contents
@@ -80,14 +78,14 @@ They exist for different reasons and are not interchangeable:
 | PDF extraction | PyMuPDF | Reliable text extraction, pure wheel, no external binaries |
 | Chunking | Hand-written | The assignment asks for two strategies — implementing them is the point |
 | Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) | Local, deterministic, free, 384 dimensions |
-| Vector DB | Qdrant | Runs locally via Docker, no cloud account needed; supports payload filtering |
+| Vector DB | Qdrant | Runs embedded on disk or against a server — no cloud account, no container needed; supports payload filtering |
 | SQL DB | PostgreSQL + SQLAlchemy 2.0 (async) | Real relational modelling for documents and bookings |
 | Migrations | Alembic | Versioned schema, reproducible environments |
 | Chat memory | Redis | Session-based history with TTL |
 | LLM | OpenAI-compatible client | Swap Gemini / Groq / local vLLM by changing `.env`, not code |
 | Tests | pytest + httpx | Fast unit tests with fakes, integration tests against the real stack |
 
-**Why Qdrant and not Pinecone?** Pinecone is a hosted product — it needs an account and network access, and it makes the project impossible to run offline. Qdrant runs in one Docker container and gives the same API shape, including payload filters, so the code is portable to Pinecone later if that is ever required.
+**Why Qdrant and not Pinecone?** Pinecone is a hosted product — it needs an account and network access, and it makes the project impossible to run offline. Qdrant runs embedded on disk (no server, no container) with the same client API it exposes against a server, including payload filters, so the code is portable to Pinecone later if that is ever required.
 
 ## API 1 — Document ingestion
 
@@ -219,8 +217,9 @@ The dependency direction is one-way: `api → services → repositories/integrat
 Intended quickstart (once implemented — see the status note at the top):
 
 ```bash
-# 1. infrastructure
-docker compose up -d                      # postgres, redis, qdrant
+# 1. infrastructure — native services, no containers
+sudo pacman -S postgresql redis           # once
+sudo ./scripts/setup_local.sh             # init + start postgres, start redis
 
 # 2. application
 uv sync
@@ -246,7 +245,7 @@ A few choices worth defending in a review:
 - **Chunkers are pure and synchronous.** No I/O, no globals, no config reads from inside them — so they are trivially testable and the strategy is chosen in exactly one place (the factory).
 - **Token counting is a whitespace estimate, not a model tokenizer.** It is approximate. A `ponytail:` comment in the code marks the ceiling and the upgrade path.
 - **Embedding model truncation is a real constraint.** `all-MiniLM-L6-v2` truncates at 256 word-pieces, so the default chunk size is 200 words, not the 500 you see in most tutorials. Chunks larger than that would be silently truncated and lose their tails.
-- **The embedding model loads lazily.** `torch` is a 2 GB dependency; importing it at startup would make the container slow to boot and the test suite painful.
+- **The embedding model loads lazily.** `torch` is a 2 GB dependency; importing it at startup would make boot slow and the test suite painful.
 - **The booking check runs before retrieval.** It is cheap and unambiguous, and a booking request should not pull document context into its reply.
 - **Qdrant payloads carry the chunk text.** Retrieval never re-embeds; the trade-off is payload size, which is acceptable at this scale.
 - **One uniform error envelope** for every failure — `{"error": {"code", "message", "details", "request_id"}}` — so a client never has to parse two error formats.

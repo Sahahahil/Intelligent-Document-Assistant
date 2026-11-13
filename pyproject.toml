@@ -1,0 +1,61 @@
+[project]
+name = "intelligent-document-assistant"
+version = "0.1.0"
+description = "RAG backend for document ingestion and conversational Q&A"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.162.5",
+    "pydantic[email]>=2.14.3",
+    "pydantic-settings>=2.16.2",
+    "python-multipart>=0.0.33",
+    "uvicorn[standard]>=0.54.0",
+    "sqlalchemy[asyncio]>=2.1.8",
+    "asyncpg>=0.32.0",
+    "alembic>=1.20.1",
+    "redis>=8.1.0",
+    "qdrant-client>=1.20.0",
+    "pymupdf>=2.1",
+    "openai>=3.50.0",
+    "sentence-transformers>=6.3.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Alembic generates these; don't lint generated migrations.
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["sentence_transformers.*", "qdrant_client.*", "fitz", "pymupdf.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = ["integration: requires the local PostgreSQL and Redis services"]
+addopts = "-m 'not integration'"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.5",
+]
