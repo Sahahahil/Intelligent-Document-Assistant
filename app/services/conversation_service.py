@@ -6,29 +6,17 @@ overwrite each other.
 
 import json
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from redis.asyncio import Redis
-from redis.exceptions import RedisError
 
 from app.core.config import get_settings
-from app.core.exceptions import UpstreamError
 from app.integrations.llm import ChatMessage
+from app.integrations.redis import redis_guard
 
 logger = logging.getLogger(__name__)
 
 KEY_PREFIX = "conversation:"
-
-
-@asynccontextmanager
-async def _redis_guard() -> AsyncIterator[None]:
-    """Turn any Redis failure into an `UpstreamError` (502)."""
-    try:
-        yield
-    except RedisError as exc:
-        raise UpstreamError(f"Redis error: {exc}") from exc
 
 
 class ConversationStore:
@@ -51,7 +39,7 @@ class ConversationStore:
         if limit <= 0:
             return []
         key = self._key(session_id)
-        async with _redis_guard():
+        async with redis_guard():
             raw = await self._redis.lrange(key, -limit, -1)
         messages: list[ChatMessage] = []
         for item in raw:
@@ -75,7 +63,7 @@ class ConversationStore:
         )
         key = self._key(session_id)
         # One round trip, and the trim cannot be seen without the expiry.
-        async with _redis_guard(), self._redis.pipeline(transaction=True) as pipe:
+        async with redis_guard(), self._redis.pipeline(transaction=True) as pipe:
             pipe.rpush(key, payload)
             pipe.ltrim(key, -self._max, -1)
             pipe.expire(key, self._ttl)
@@ -83,12 +71,12 @@ class ConversationStore:
 
     async def clear(self, session_id: str) -> None:
         """Forget the session."""
-        async with _redis_guard():
+        async with redis_guard():
             await self._redis.delete(self._key(session_id))
 
     async def exists(self, session_id: str) -> bool:
         """Whether the session has any stored messages."""
-        async with _redis_guard():
+        async with redis_guard():
             return bool(await self._redis.exists(self._key(session_id)))
 
     @staticmethod

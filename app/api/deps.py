@@ -10,8 +10,9 @@ from app.db.session import get_db
 from app.integrations.llm import LLMClient, get_llm_client
 from app.integrations.qdrant import get_vector_store
 from app.integrations.redis import get_redis_client
+from app.repositories.booking_repository import BookingRepository
 from app.repositories.document_repository import DocumentRepository
-from app.services.booking_service import BookingService
+from app.services.booking_service import BookingExtractor, BookingService
 from app.services.chat_orchestrator import ChatOrchestrator
 from app.services.conversation_service import ConversationStore
 from app.services.embedding_service import get_embedding_service
@@ -87,8 +88,24 @@ def get_chat_orchestrator(
     return ChatOrchestrator(rag=rag, store=store)
 
 
-def get_booking_service(
+def get_booking_repository(
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> BookingRepository:
+    """A repository bound to this request's database session."""
+    return BookingRepository(session)
+
+
+def get_booking_extractor(
     llm: Annotated[LLMClient, Depends(get_llm_client)],
+) -> BookingExtractor:
+    """The booking extractor for this request."""
+    return BookingExtractor(llm)
+
+
+def get_booking_service(
+    extractor: Annotated[BookingExtractor, Depends(get_booking_extractor)],
+    repo: Annotated[BookingRepository, Depends(get_booking_repository)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> BookingService:
     """The booking service for this request."""
-    return BookingService(llm)
+    return BookingService(extractor=extractor, repo=repo, redis=redis)
