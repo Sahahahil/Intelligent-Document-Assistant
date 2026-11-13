@@ -80,14 +80,6 @@ def get_rag_service(
     return RAGService(retrieval=retrieval, llm=llm, rewriter=rewriter)
 
 
-def get_chat_orchestrator(
-    rag: Annotated[RAGService, Depends(get_rag_service)],
-    store: Annotated[ConversationStore, Depends(get_conversation_store)],
-) -> ChatOrchestrator:
-    """The chat orchestrator for this request."""
-    return ChatOrchestrator(rag=rag, store=store)
-
-
 def get_booking_repository(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> BookingRepository:
@@ -109,3 +101,12 @@ def get_booking_service(
 ) -> BookingService:
     """The booking service for this request."""
     return BookingService(extractor=extractor, repo=repo, redis=redis)
+
+
+def get_chat_orchestrator(
+    rag: Annotated[RAGService, Depends(get_rag_service)],
+    booking: Annotated[BookingService, Depends(get_booking_service)],
+    store: Annotated[ConversationStore, Depends(get_conversation_store)],
+) -> ChatOrchestrator:
+    """The chat orchestrator for this request."""
+    return ChatOrchestrator(rag=rag, booking=booking, store=store)

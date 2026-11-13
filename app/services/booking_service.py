@@ -79,7 +79,7 @@ class BookingTurn:
 
     is_booking: bool
     reply: str | None
-    booking: BookingModel | None
+    booking: BookingModel | None  # the booking block - `None` for a non-booking turn
     missing_fields: list[str]
     awaiting_confirmation: bool
     persisted: bool
@@ -149,7 +149,7 @@ class BookingService:
                 is_booking=True,
                 reply="No problem - I have cleared that request. "
                 "Tell me when you would like to book.",
-                booking=None,
+                booking=BookingModel(),
                 missing_fields=[],
                 awaiting_confirmation=False,
                 persisted=False,
@@ -180,7 +180,7 @@ class BookingService:
             return BookingTurn(
                 is_booking=True,
                 reply=self._ask_for(missing),
-                booking=None,
+                booking=self._pending_model(merged, missing=missing),
                 missing_fields=missing,
                 awaiting_confirmation=False,
                 persisted=False,
@@ -192,7 +192,7 @@ class BookingService:
             return BookingTurn(
                 is_booking=True,
                 reply=self._summary(merged),
-                booking=None,
+                booking=self._pending_model(merged, awaiting_confirmation=True),
                 missing_fields=[],
                 awaiting_confirmation=True,
                 persisted=False,
@@ -329,6 +329,24 @@ class BookingService:
             f"{booking.interview_date.isoformat()} "
             f"at {booking.interview_time.strftime('%H:%M')} on file - "
             f"I have not booked it twice."
+        )
+
+    @staticmethod
+    def _pending_model(
+        fields: BookingFields,
+        *,
+        missing: list[str] | None = None,
+        awaiting_confirmation: bool = False,
+    ) -> BookingModel:
+        """The booking block for a turn that has not been written yet."""
+        return BookingModel(
+            name=fields.name,
+            email=fields.email,
+            interview_date=fields.interview_date,
+            interview_time=fields.interview_time,
+            status="pending",
+            missing_fields=missing or [],
+            awaiting_confirmation=awaiting_confirmation,
         )
 
     @staticmethod

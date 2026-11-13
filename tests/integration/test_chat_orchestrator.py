@@ -15,7 +15,9 @@ from redis.asyncio import Redis
 
 from app.core.config import get_settings
 from app.integrations.llm import ChatMessage
+from app.schemas.booking import BookingModel
 from app.schemas.chat import ChatRequest
+from app.services.booking_service import BookingService, BookingTurn
 from app.services.chat_orchestrator import ChatOrchestrator
 from app.services.conversation_service import KEY_PREFIX, ConversationStore
 from app.services.rag_service import RAGAnswer, RAGService
@@ -41,6 +43,23 @@ class FakeRagService:
         )
 
 
+class FakeBookingService:
+    def __init__(self, turn: BookingTurn | None = None) -> None:
+        self.turn = turn or BookingTurn(
+            is_booking=False,
+            reply=None,
+            booking=None,
+            missing_fields=[],
+            awaiting_confirmation=False,
+            persisted=False,
+        )
+
+    async def handle_turn(
+        self, *, session_id: str, message: str, history: Sequence[ChatMessage]
+    ) -> BookingTurn:
+        return self.turn
+
+
 @pytest.fixture
 async def redis_client() -> AsyncIterator[Redis]:
     client = Redis.from_url(get_settings().redis_url, encoding="utf-8", decode_responses=True)
@@ -59,6 +78,7 @@ async def store(redis_client: Redis) -> AsyncIterator[ConversationStore]:
 def orchestrator(store: ConversationStore) -> ChatOrchestrator:
     return ChatOrchestrator(
         rag=cast(RAGService, FakeRagService()),
+        booking=cast(BookingService, FakeBookingService()),
         store=store,
     )
 
@@ -82,3 +102,28 @@ async def test_the_second_turn_sees_the_first(
     history = await store.get_history(SESSION_ID)
 
     assert len(history) == 2
+
+
+async def test_a_booking_turn_is_stored(store: ConversationStore, redis_client: Redis) -> None:
+    orchestrator = ChatOrchestrator(
+        rag=cast(RAGService, FakeRagService()),
+        booking=cast(
+            BookingService,
+            FakeBookingService(
+                BookingTurn(
+                    is_booking=True,
+                    reply="Please confirm to book.",
+                    booking=BookingModel(awaiting_confirmation=True),
+                    missing_fields=[],
+                    awaiting_confirmation=True,
+                    persisted=False,
+                )
+            ),
+        ),
+        store=store,
+    )
+
+    await orchestrator.handle(ChatRequest(session_id=SESSION_ID, message="schedule one"))
+
+    history = await store.get_history(SESSION_ID)
+    assert [message.content for message in history] == ["schedule one", "Please confirm to book."]
