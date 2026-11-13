@@ -11,6 +11,7 @@ from app.integrations.llm import LLMClient, get_llm_client
 from app.integrations.qdrant import get_vector_store
 from app.integrations.redis import get_redis_client
 from app.repositories.document_repository import DocumentRepository
+from app.services.booking_service import BookingService
 from app.services.chat_orchestrator import ChatOrchestrator
 from app.services.conversation_service import ConversationStore
 from app.services.embedding_service import get_embedding_service
@@ -84,3 +85,10 @@ def get_chat_orchestrator(
 ) -> ChatOrchestrator:
     """The chat orchestrator for this request."""
     return ChatOrchestrator(rag=rag, store=store)
+
+
+def get_booking_service(
+    llm: Annotated[LLMClient, Depends(get_llm_client)],
+) -> BookingService:
+    """The booking service for this request."""
+    return BookingService(llm)

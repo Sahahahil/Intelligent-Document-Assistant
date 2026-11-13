@@ -1,12 +1,12 @@
 """Request and response models for the conversational RAG API."""
 
-from datetime import date, datetime, time
-from typing import Literal
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from app.integrations.llm import Role
+from app.schemas.booking import BookingModel
 
 # The session id becomes a Redis key, so it is kept to a safe charset.
 SESSION_ID_PATTERN = r"^[A-Za-z0-9._:-]+$"
@@ -27,19 +27,6 @@ class SourceModel(BaseModel):
     filename: str
     chunk_index: int
     score: float
-
-
-class BookingModel(BaseModel):
-    """The booking draft - populated by the booking flow (T18-T20)."""
-
-    id: UUID | None = None
-    name: str | None = None
-    email: str | None = None
-    interview_date: date | None = None
-    interview_time: time | None = None
-    status: Literal["pending", "confirmed", "cancelled"] = "pending"
-    missing_fields: list[str] = Field(default_factory=list)
-    awaiting_confirmation: bool = False
 
 
 class ChatResponse(BaseModel):
