@@ -214,7 +214,7 @@ The dependency direction is one-way: `api → services → repositories/integrat
 
 ## Getting started
 
-Intended quickstart (once implemented — see the status note at the top):
+Quickstart — the ingestion API works today; the chat API arrives with the conversational phase:
 
 ```bash
 # 1. infrastructure — native services, no containers

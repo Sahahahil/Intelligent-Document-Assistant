@@ -43,8 +43,8 @@ class IngestionResult:
 
     document_id: UUID
     filename: str
-    status: str
-    chunking_strategy: str
+    status: DocumentStatus
+    chunking_strategy: ChunkingStrategy
     total_chunks: int
     embedding_model: str
     embedding_dim: int
@@ -165,8 +165,8 @@ class IngestionService:
         return IngestionResult(
             document_id=document.id,
             filename=name,
-            status=DocumentStatus.COMPLETED.value,
-            chunking_strategy=strategy.value,
+            status=DocumentStatus.COMPLETED,
+            chunking_strategy=strategy,
             total_chunks=len(chunks),
             embedding_model=self._embedding_service.model_name,
             embedding_dim=self._embedding_service.dimension,

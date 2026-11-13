@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
-api_router = APIRouter()
+from app.api.v1 import documents
 
-# v1 routers are mounted here as they are added (documents in T11, chat in T17).
+api_router = APIRouter()
+api_router.include_router(documents.router)
