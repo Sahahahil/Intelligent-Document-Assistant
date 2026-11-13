@@ -11,10 +11,13 @@ from app.integrations.llm import LLMClient, get_llm_client
 from app.integrations.qdrant import get_vector_store
 from app.integrations.redis import get_redis_client
 from app.repositories.document_repository import DocumentRepository
+from app.services.chat_orchestrator import ChatOrchestrator
 from app.services.conversation_service import ConversationStore
 from app.services.embedding_service import get_embedding_service
 from app.services.ingestion_service import IngestionService
 from app.services.query_rewriter import QueryRewriter
+from app.services.rag_service import RAGService
+from app.services.retrieval_service import RetrievalService
 
 
 def get_document_repository(
@@ -56,3 +59,28 @@ def get_query_rewriter(
 ) -> QueryRewriter:
     """The query rewriter for this request."""
     return QueryRewriter(llm)
+
+
+def get_retrieval_service() -> RetrievalService:
+    """The retrieval service - the vector store and the embedder are singletons."""
+    return RetrievalService(
+        vector_store=get_vector_store(),
+        embedding_service=get_embedding_service(),
+    )
+
+
+def get_rag_service(
+    retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    llm: Annotated[LLMClient, Depends(get_llm_client)],
+    rewriter: Annotated[QueryRewriter, Depends(get_query_rewriter)],
+) -> RAGService:
+    """The RAG service for this request."""
+    return RAGService(retrieval=retrieval, llm=llm, rewriter=rewriter)
+
+
+def get_chat_orchestrator(
+    rag: Annotated[RAGService, Depends(get_rag_service)],
+    store: Annotated[ConversationStore, Depends(get_conversation_store)],
+) -> ChatOrchestrator:
+    """The chat orchestrator for this request."""
+    return ChatOrchestrator(rag=rag, store=store)
