@@ -3,11 +3,14 @@
 from typing import Annotated
 
 from fastapi import Depends
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.integrations.qdrant import get_vector_store
+from app.integrations.redis import get_redis_client
 from app.repositories.document_repository import DocumentRepository
+from app.services.conversation_service import ConversationStore
 from app.services.embedding_service import get_embedding_service
 from app.services.ingestion_service import IngestionService
 
@@ -32,3 +35,15 @@ def get_ingestion_service(
         vector_store=get_vector_store(),
         embedding_service=get_embedding_service(),
     )
+
+
+def get_redis() -> Redis:
+    """The process-wide Redis client — the connection pool is reused."""
+    return get_redis_client()
+
+
+def get_conversation_store(
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> ConversationStore:
+    """The conversation store for this request."""
+    return ConversationStore(redis)
