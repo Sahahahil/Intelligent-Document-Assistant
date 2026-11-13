@@ -10,6 +10,7 @@ import pytest
 from app.core.exceptions import UpstreamError
 from app.integrations.llm import ChatMessage, LLMClient
 from app.integrations.qdrant import RetrievedChunk
+from app.services.query_rewriter import QueryRewriter
 from app.services.rag_service import (
     MAX_CONTEXT_CHARS,
     MAX_HISTORY_MESSAGES,
@@ -169,7 +170,7 @@ async def test_the_rewriter_produces_the_retrieval_query(
     service = RAGService(
         retrieval=cast(RetrievalService, retrieval),
         llm=cast(LLMClient, llm),
-        rewriter=rewriter,
+        rewriter=cast(QueryRewriter, rewriter),
     )
 
     result = await service.answer("what about the second one?", history=[])

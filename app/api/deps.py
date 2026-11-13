@@ -7,12 +7,14 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.integrations.llm import LLMClient, get_llm_client
 from app.integrations.qdrant import get_vector_store
 from app.integrations.redis import get_redis_client
 from app.repositories.document_repository import DocumentRepository
 from app.services.conversation_service import ConversationStore
 from app.services.embedding_service import get_embedding_service
 from app.services.ingestion_service import IngestionService
+from app.services.query_rewriter import QueryRewriter
 
 
 def get_document_repository(
@@ -47,3 +49,10 @@ def get_conversation_store(
 ) -> ConversationStore:
     """The conversation store for this request."""
     return ConversationStore(redis)
+
+
+def get_query_rewriter(
+    llm: Annotated[LLMClient, Depends(get_llm_client)],
+) -> QueryRewriter:
+    """The query rewriter for this request."""
+    return QueryRewriter(llm)
