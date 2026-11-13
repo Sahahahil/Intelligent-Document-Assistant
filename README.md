@@ -7,8 +7,6 @@ Two REST APIs, built on FastAPI:
 1. **Document Ingestion** — upload a `.pdf` / `.txt`, extract text, chunk it with a selectable strategy, embed it, store vectors in Qdrant and metadata in PostgreSQL.
 2. **Conversational RAG** — ask questions across your documents with multi-turn memory in Redis, and book an interview by just talking to it.
 
-> **Status:** design phase. The implementation plan lives in [`/spec`](.claude/spec/README.md), [`/plan`](.claude/plan/README.md) and [`/qa`](.claude/qa/README.md). Nothing in this README is claimed to be working yet.
-
 ---
 
 ## Table of contents

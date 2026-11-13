@@ -26,6 +26,8 @@ package = false
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Alembic generates these; don't lint generated migrations.
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
