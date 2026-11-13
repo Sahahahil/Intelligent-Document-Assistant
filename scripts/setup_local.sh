@@ -36,7 +36,9 @@ if pg_isready -h localhost -p "$PGPORT" >/dev/null 2>&1; then
     echo "==> PostgreSQL already listening on $PGPORT"
 else
     echo "==> starting PostgreSQL on $PGPORT"
-    pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -o "-p $PGPORT" start
+    # -k: keep the unix socket inside our own data dir; /run/postgresql is
+    # root-owned and we do not need a system-wide socket.
+    pg_ctl -D "$PGDATA" -l "$PGDATA/server.log" -o "-p $PGPORT -k $PGDATA" start
     for _ in $(seq 1 30); do
         pg_isready -h localhost -p "$PGPORT" >/dev/null 2>&1 && break
         sleep 0.5
