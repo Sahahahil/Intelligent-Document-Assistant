@@ -22,6 +22,8 @@ class Chunker(Protocol):
     """Splits a document's text into chunks."""
 
     strategy: ChunkingStrategy
+    chunk_size: int
+    chunk_overlap: int
 
     def split(self, text: str, *, document_id: UUID) -> list[DocumentChunk]: ...
 
