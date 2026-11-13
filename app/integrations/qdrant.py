@@ -146,7 +146,10 @@ class VectorStore:
         document_ids: Sequence[UUID] | None = None,
         score_threshold: float | None = None,
     ) -> list[RetrievedChunk]:
-        """Find the closest chunks, optionally restricted to some documents."""
+        """Find the closest chunks, optionally restricted to some documents.
+
+        The chunks come back ordered by descending score.
+        """
         query_filter = None
         if document_ids:
             query_filter = models.Filter(

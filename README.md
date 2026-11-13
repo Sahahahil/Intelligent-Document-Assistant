@@ -258,6 +258,7 @@ A few choices worth defending in a review:
 - **The embedding model loads lazily.** `torch` is a 2 GB dependency; importing it at startup would make boot slow and the test suite painful.
 - **The booking check runs before retrieval.** It is cheap and unambiguous, and a booking request should not pull document context into its reply.
 - **Qdrant payloads carry the chunk text.** Retrieval never re-embeds; the trade-off is payload size, which is acceptable at this scale.
+- **The LLM retry policy is the SDK's.** It retries 429 and 5xx twice with backoff and never retries a 4xx; a second retry loop on top would only double the attempts and hide the behaviour.
 - **One uniform error envelope** for every failure — `{"error": {"code", "message", "details", "request_id"}}` — so a client never has to parse two error formats.
 
 ## Known limitations
