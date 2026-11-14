@@ -1,7 +1,6 @@
 # Intelligent Document Assistant
 
-A FastAPI backend with two REST APIs: **document ingestion** and **conversational
-RAG with interview booking**.
+A FastAPI backend with two REST APIs: **document ingestion** and **conversational RAG with interview booking**.
 
 ---
 
@@ -27,13 +26,27 @@ RAG with interview booking**.
 | No `RetrievalQAChain` | the pipeline is written out stage by stage |
 | Clean modular code, typed | `api → services → repositories/integrations`; `mypy --strict` is clean |
 
+## Why these tools
+
+The brief left a few choices open; each one was picked against a requirement.
+
+| Area | Choice | Why |
+|---|---|---|
+| Vector store | **Qdrant** | One container, and it also runs embedded in-process, so the tests need no server. Pinecone needs an account and a key; Weaviate and Milvus bring a topology to learn before anything runs. |
+| Metadata | **PostgreSQL** + SQLAlchemy + Alembic | The rule that matters — one interview per slot — is a unique index, so the database enforces it instead of the application. Alembic keeps the schema history reviewable. |
+| Chat memory | **Redis** | Cross-turn state that survives a restart, is shared between workers, and expires on its own TTL. A per-process dict loses the conversation on redeploy. |
+| RAG | **Hand-written** | History → rewrite → embed → retrieve → prompt → answer, one module per stage. Retrieval misses and chunk scores stay visible instead of hidden inside a chain. |
+| Embeddings | **Sentence Transformers** `all-MiniLM-L6-v2` | 384-dim, CPU-only, no API key: ingestion runs offline and cannot fail because the LLM provider is down. |
+| API | **FastAPI** + Pydantic v2 | One model is the schema, the validator and the OpenAPI definition; `Annotated` dependencies are typed injection without a DI container. |
+| PDF text | **PyMuPDF** | Fast and dependency-light, and its block structure keeps paragraphs intact for the recursive chunker. |
+| LLM | **OpenAI SDK**, any compatible `base_url` | One client for OpenAI, Groq, Gemini, Ollama and vLLM — `.env` changes, not code. |
+| Tests | **pytest** + httpx `ASGITransport` | The real app in-process against real PostgreSQL, Redis and Qdrant; no mock of the framework itself. |
+
 ---
 
 ## Setup
 
-You need **Docker 24+** with the Compose plugin, and about **5 GB of disk**
-(the image is mostly CPU `torch`). Python, PostgreSQL and Redis are not needed
-— they all run in containers.
+You need **Docker 24+** with the Compose plugin, and about **5 GB of disk** (the image is mostly CPU `torch`). Python, PostgreSQL and Redis are not needed, they all run in containers.
 
 ```bash
 git clone https://github.com/Sahahahil/Intelligent-Document-Assistant.git
@@ -67,11 +80,9 @@ docker compose exec ollama ollama pull llama3.1:8b
 # then in .env:  LLM_BASE_URL=http://ollama:11434/v1
 ```
 
-Any OpenAI-compatible server works the same way — llama.cpp's `llama-server`,
-LM Studio, vLLM. Only `LLM_BASE_URL` changes.
+Any OpenAI-compatible server works the same way — llama.cpp's `llama-server`, LM Studio, vLLM. Only `LLM_BASE_URL` changes.
 
-Nothing else in `.env` needs editing: the Compose file points the app at its
-own containers.
+Nothing else in `.env` needs editing: the Compose file points the app at its own containers.
 
 ---
 
@@ -81,9 +92,7 @@ own containers.
 docker compose up --build
 ```
 
-The first build takes a few minutes (it downloads CPU `torch`); after that it
-reuses the layer. The API waits for PostgreSQL and Redis, applies the Alembic
-migrations, and then serves on <http://localhost:8000>.
+The first build takes a few minutes (it downloads CPU `torch`); after that it reuses the layer. The API waits for PostgreSQL and Redis, applies the Alembic migrations, and then serves on <http://localhost:8000>.
 
 ```bash
 curl localhost:8000/ready      # {"status":"ready","checks":{"postgres":"ok","redis":"ok","qdrant":"ok"}}
@@ -91,14 +100,11 @@ open localhost:8000/docs       # interactive API docs
 ```
 
 In the docs page: click **Try it out**, then pick the file, then **Execute**.
-The file has to be attached after *Try it out* — an empty `chunk_size` field
-is sent as `0`, which means "use the default".
+The file has to be attached after *Try it out* — an empty `chunk_size` field is sent as `0`, which means "use the default".
 
 Only `/chat` needs an LLM — ingestion, the probes and the tests do not.
 
-**Without Docker:** `uv sync`, then `./scripts/setup_local.sh` (starts
-PostgreSQL and Redis), `uv run alembic upgrade head`, and
-`uv run uvicorn app.main:app --reload`. Qdrant then runs embedded on disk.
+**Without Docker:** `uv sync`, then `./scripts/setup_local.sh` (starts PostgreSQL and Redis), `uv run alembic upgrade head`, and `uv run uvicorn app.main:app --reload`. Qdrant then runs embedded on disk.
 
 ---
 
