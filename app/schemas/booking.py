@@ -6,8 +6,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models.booking import BookingStatus
-
 
 class BookingFields(BaseModel):
     """The four details a booking needs. All optional - a partial answer is valid."""
@@ -30,8 +28,8 @@ class BookingExtraction(BaseModel):
 class BookingModel(BaseModel):
     """A booking, as the API returns it.
 
-    `pending` means a draft that is not stored yet - stored rows are only
-    ever confirmed or cancelled.
+    `pending` means a draft that is not stored yet - a stored booking is
+    either confirmed or cancelled.
     """
 
     id: UUID | None = None
@@ -54,7 +52,6 @@ class BookingSummary(BaseModel):
     email: str
     interview_date: date
     interview_time: time
-    status: BookingStatus
     created_at: datetime
 
 

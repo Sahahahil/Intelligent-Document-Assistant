@@ -122,7 +122,6 @@ async def test_the_confirmation_writes_one_row(
     assert row.interview_date == TOMORROW
     assert row.interview_time == time(14, 0)
     assert row.session_id == session_id
-    assert row.status.value == "confirmed"
 
 
 async def test_the_draft_is_deleted_after_the_booking(
@@ -243,8 +242,11 @@ async def test_a_cancelled_booking_frees_the_slot(
     assert cancelled.persisted is True
     assert cancelled.booking is not None
     assert cancelled.booking.status == "cancelled"
+    # The row was the booking - cancelling removed it.
+    count = await db_session.execute(select(func.count()).select_from(Booking))
+    assert count.scalar_one() == 0
 
-    # The slot is free again - the index only covers confirmed bookings.
+    # The slot is free again - cancelling removed the row.
     extractor.extractions["schedule an interview again"] = extraction
     again = await service.handle_turn(
         session_id=session_id, message="schedule an interview again", history=[]
@@ -253,4 +255,4 @@ async def test_a_cancelled_booking_frees_the_slot(
     booked = await service.handle_turn(session_id=session_id, message="yes", history=[])
     assert booked.persisted is True
     count = await db_session.execute(select(func.count()).select_from(Booking))
-    assert count.scalar_one() == 2
+    assert count.scalar_one() == 1

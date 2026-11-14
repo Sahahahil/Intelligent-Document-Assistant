@@ -14,7 +14,7 @@ from httpx import AsyncClient
 
 from app.api.deps import get_booking_repository
 from app.main import app
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking
 
 
 def make_booking(**overrides: object) -> Booking:
@@ -25,7 +25,6 @@ def make_booking(**overrides: object) -> Booking:
         "email": "sahil@example.com",
         "interview_date": date(2026, 11, 20),
         "interview_time": time(14, 0),
-        "status": BookingStatus.CONFIRMED,
         "created_at": datetime.now(UTC),
     }
     values.update(overrides)
@@ -44,7 +43,6 @@ class FakeBookingRepository:
         offset: int = 0,
         email: str | None = None,
         interview_date: date | None = None,
-        status: BookingStatus | None = None,
     ) -> tuple[list[Booking], int]:
         self.calls.append(
             {
@@ -52,7 +50,6 @@ class FakeBookingRepository:
                 "offset": offset,
                 "email": email,
                 "interview_date": interview_date,
-                "status": status,
             }
         )
         rows = [
@@ -60,7 +57,6 @@ class FakeBookingRepository:
             for booking in self.bookings
             if (email is None or booking.email == email)
             and (interview_date is None or booking.interview_date == interview_date)
-            and (status is None or booking.status == status)
         ]
         return rows[offset : offset + limit], len(rows)
 
@@ -90,7 +86,6 @@ async def test_the_bookings_are_listed(client: AsyncClient, repo: FakeBookingRep
     assert body["items"][0]["email"] == "sahil@example.com"
     assert body["items"][0]["interview_date"] == "2026-11-20"
     assert body["items"][0]["interview_time"] == "14:00:00"
-    assert body["items"][0]["status"] == "confirmed"
 
 
 async def test_the_list_is_paginated(client: AsyncClient, repo: FakeBookingRepository) -> None:
@@ -144,28 +139,6 @@ async def test_the_list_can_be_filtered_by_date(
     assert body["items"][0]["interview_date"] == "2026-11-21"
 
 
-async def test_the_list_can_be_filtered_by_status(
-    client: AsyncClient, repo: FakeBookingRepository
-) -> None:
-    repo.bookings = [
-        make_booking(status=BookingStatus.CONFIRMED),
-        make_booking(status=BookingStatus.CANCELLED),
-    ]
-
-    response = await client.get("/api/v1/bookings", params={"status": "cancelled"})
-
-    assert response.status_code == status.HTTP_200_OK
-    body = response.json()
-    assert body["total"] == 1
-    assert body["items"][0]["status"] == "cancelled"
-
-
-async def test_an_unknown_status_is_rejected(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/bookings", params={"status": "pending"})
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
-
-
 async def test_an_unknown_date_is_rejected(client: AsyncClient) -> None:
     response = await client.get("/api/v1/bookings", params={"interview_date": "20-11-2026"})
 
@@ -180,13 +153,11 @@ async def test_the_filters_are_passed_to_the_repository(
         params={
             "email": "sahil@example.com",
             "interview_date": "2026-11-20",
-            "status": "confirmed",
         },
     )
 
     assert repo.calls[0]["email"] == "sahil@example.com"
     assert repo.calls[0]["interview_date"] == date(2026, 11, 20)
-    assert repo.calls[0]["status"] == BookingStatus.CONFIRMED
 
 
 async def test_the_responses_leak_no_orm_fields(
@@ -202,7 +173,6 @@ async def test_the_responses_leak_no_orm_fields(
         "email",
         "interview_date",
         "interview_time",
-        "status",
         "created_at",
     }
 

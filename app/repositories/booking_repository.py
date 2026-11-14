@@ -1,11 +1,13 @@
 """Persistence for interview bookings."""
 
 from datetime import date, time
+from uuid import UUID
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking
 
 
 class BookingRepository:
@@ -19,37 +21,32 @@ class BookingRepository:
         return booking
 
     async def find_conflict(self, when: date, at: time) -> Booking | None:
-        """Return the confirmed booking that occupies that slot, whoever it is.
+        """Return the booking that occupies that slot, whoever it is.
 
-        Mirrors the `uq_bookings_slot` partial unique index, which only
-        covers confirmed bookings — the repository and the database agree on
-        what a conflict is.
+        Mirrors the `uq_bookings_slot` unique index, so the repository and
+        the database agree on what a conflict is.
         """
         result = await self._session.execute(
             select(Booking).where(
                 Booking.interview_date == when,
                 Booking.interview_time == at,
-                Booking.status == BookingStatus.CONFIRMED,
             )
         )
         return result.scalar_one_or_none()
 
-    async def find_confirmed(self, session_id: str) -> Booking | None:
-        """The confirmed booking this session made, if it still has one."""
+    async def find_for_session(self, session_id: str) -> Booking | None:
+        """The booking this session made, if it still has one."""
         result = await self._session.execute(
-            select(Booking).where(
-                Booking.session_id == session_id,
-                Booking.status == BookingStatus.CONFIRMED,
-            )
+            select(Booking).where(Booking.session_id == session_id)
         )
         return result.scalar_one_or_none()
 
-    async def cancel(self, booking: Booking) -> Booking:
-        """Give the slot back: a cancelled booking no longer occupies it."""
-        booking.status = BookingStatus.CANCELLED
+    async def delete(self, booking_id: UUID) -> None:
+        """Remove a booking. The row was the booking, so the slot is free again."""
+        await self._session.execute(
+            sa_delete(Booking).where(Booking.id == booking_id)
+        )
         await self._session.commit()
-        await self._session.refresh(booking)
-        return booking
 
     async def list(
         self,
@@ -58,7 +55,6 @@ class BookingRepository:
         offset: int = 0,
         email: str | None = None,
         interview_date: date | None = None,
-        status: BookingStatus | None = None,
     ) -> tuple[list[Booking], int]:
         """A page of bookings, newest first.
 
@@ -71,8 +67,6 @@ class BookingRepository:
             filters.append(Booking.email == email)
         if interview_date is not None:
             filters.append(Booking.interview_date == interview_date)
-        if status is not None:
-            filters.append(Booking.status == status)
         if filters:
             rows_stmt = rows_stmt.where(*filters)
             count_stmt = count_stmt.where(*filters)

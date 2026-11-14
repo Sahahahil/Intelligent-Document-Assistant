@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking
 from app.models.document import ChunkingStrategy, Document, DocumentStatus
 from app.repositories.booking_repository import BookingRepository
 from app.repositories.document_repository import DocumentRepository
@@ -90,7 +90,6 @@ async def test_booking_slot_conflict(db_session: AsyncSession) -> None:
         email=email,
         interview_date=date(2026, 11, 20),
         interview_time=time(14, 0),
-        status=BookingStatus.CONFIRMED,
     )
     await repo.create(booking)
 
@@ -101,39 +100,7 @@ async def test_booking_slot_conflict(db_session: AsyncSession) -> None:
     assert await repo.find_conflict(date(2026, 11, 21), time(14, 0)) is None
 
 
-async def test_only_confirmed_bookings_occupy_a_slot(db_session: AsyncSession) -> None:
-    """A cancelled booking must not block the same slot."""
-    repo = BookingRepository(db_session)
-    email = f"{uuid4().hex}@example.com"
-    when, at = date(2026, 11, 20), time(14, 0)
-
-    await repo.create(
-        Booking(
-            session_id="s1",
-            name="Sahil",
-            email=email,
-            interview_date=when,
-            interview_time=at,
-            status=BookingStatus.CANCELLED,
-        )
-    )
-    assert await repo.find_conflict(when, at) is None
-
-    # The database agrees: a cancelled row does not block a confirmed one.
-    await repo.create(
-        Booking(
-            session_id="s1",
-            name="Sahil",
-            email=email,
-            interview_date=when,
-            interview_time=at,
-            status=BookingStatus.CONFIRMED,
-        )
-    )
-    assert await repo.find_conflict(when, at) is not None
-
-
-async def test_two_confirmed_bookings_in_the_same_slot_are_rejected(
+async def test_two_bookings_in_the_same_slot_are_rejected(
     db_session: AsyncSession,
 ) -> None:
     """The slot is taken by whoever booked it - not by one person only."""
@@ -147,7 +114,6 @@ async def test_two_confirmed_bookings_in_the_same_slot_are_rejected(
             email=email,
             interview_date=when,
             interview_time=at,
-            status=BookingStatus.CONFIRMED,
         )
 
     await repo.create(make(f"{uuid4().hex}@example.com"))
@@ -156,9 +122,10 @@ async def test_two_confirmed_bookings_in_the_same_slot_are_rejected(
     await db_session.rollback()
 
 
-async def test_a_booking_can_be_cancelled_and_the_slot_freed(
+async def test_a_booking_can_be_deleted_and_the_slot_freed(
     db_session: AsyncSession,
 ) -> None:
+    """The row is the booking - removing it frees the slot."""
     repo = BookingRepository(db_session)
     when, at = date(2026, 11, 20), time(14, 0)
     booking = await repo.create(
@@ -168,18 +135,16 @@ async def test_a_booking_can_be_cancelled_and_the_slot_freed(
             email=f"{uuid4().hex}@example.com",
             interview_date=when,
             interview_time=at,
-            status=BookingStatus.CONFIRMED,
         )
     )
 
-    cancelled = await repo.cancel(booking)
+    await repo.delete(booking.id)
 
-    assert cancelled.status == BookingStatus.CANCELLED
     assert await repo.find_conflict(when, at) is None
-    assert await repo.find_confirmed("s1") is None
+    assert await repo.find_for_session("s1") is None
 
 
-async def test_the_confirmed_booking_of_a_session_is_found(db_session: AsyncSession) -> None:
+async def test_the_booking_of_a_session_is_found(db_session: AsyncSession) -> None:
     repo = BookingRepository(db_session)
     booking = await repo.create(
         Booking(
@@ -188,15 +153,14 @@ async def test_the_confirmed_booking_of_a_session_is_found(db_session: AsyncSess
             email=f"{uuid4().hex}@example.com",
             interview_date=date(2026, 11, 20),
             interview_time=time(14, 0),
-            status=BookingStatus.CONFIRMED,
         )
     )
 
-    found = await repo.find_confirmed("s1")
+    found = await repo.find_for_session("s1")
 
     assert found is not None
     assert found.id == booking.id
-    assert await repo.find_confirmed("other") is None
+    assert await repo.find_for_session("other") is None
 
 
 async def test_bookings_are_listed_and_filtered(db_session: AsyncSession) -> None:
@@ -208,7 +172,6 @@ async def test_bookings_are_listed_and_filtered(db_session: AsyncSession) -> Non
             email="sahil@example.com",
             interview_date=date(2026, 11, 20),
             interview_time=time(14, 0),
-            status=BookingStatus.CONFIRMED,
         )
     )
     await repo.create(
@@ -218,7 +181,6 @@ async def test_bookings_are_listed_and_filtered(db_session: AsyncSession) -> Non
             email="someone@example.com",
             interview_date=date(2026, 11, 21),
             interview_time=time(10, 0),
-            status=BookingStatus.CANCELLED,
         )
     )
 
@@ -233,10 +195,6 @@ async def test_bookings_are_listed_and_filtered(db_session: AsyncSession) -> Non
     rows, total = await repo.list(interview_date=date(2026, 11, 21))
     assert total == 1
     assert rows[0].email == "someone@example.com"
-
-    rows, total = await repo.list(status=BookingStatus.CANCELLED)
-    assert total == 1
-    assert rows[0].status == BookingStatus.CANCELLED
 
     rows, total = await repo.list(limit=1)
     assert total == 2

@@ -33,6 +33,7 @@ qdrant_data/
 *.db
 *.sqlite
 *.sqlite3
+dump.rdb
 
 # Logs and scratch
 *.log

@@ -9,6 +9,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, time
+from typing import Literal
 
 from redis.asyncio import Redis
 from sqlalchemy.exc import IntegrityError
@@ -17,7 +18,7 @@ from app.core.config import get_settings
 from app.core.exceptions import ValidationError
 from app.integrations.llm import ChatMessage, LLMClient
 from app.integrations.redis import redis_guard
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking
 from app.repositories.booking_repository import BookingRepository
 from app.schemas.booking import BookingExtraction, BookingFields, BookingModel
 
@@ -277,7 +278,6 @@ class BookingService:
             email=email,
             interview_date=when,
             interview_time=at,
-            status=BookingStatus.CONFIRMED,
         )
         try:
             return await self._repo.create(booking), True
@@ -320,10 +320,10 @@ class BookingService:
     async def _cancel_booking(
         self, session_id: str, draft: BookingFields | None
     ) -> BookingTurn:
-        """Cancel the confirmed booking of this session, if it has one."""
-        confirmed = await self._repo.find_confirmed(session_id)
+        """Cancel the booking of this session, if it has one."""
+        booking = await self._repo.find_for_session(session_id)
         await self.clear_draft(session_id)
-        if confirmed is None:
+        if booking is None:
             reply = (
                 "No problem - I have cleared that request. "
                 "Tell me when you would like to book."
@@ -338,14 +338,14 @@ class BookingService:
                 awaiting_confirmation=False,
                 persisted=False,
             )
-        cancelled = await self._repo.cancel(confirmed)
+        await self._repo.delete(booking.id)
         return BookingTurn(
             is_booking=True,
             reply=(
-                f"Your interview request for {cancelled.interview_date.isoformat()} "
-                f"at {cancelled.interview_time.strftime('%H:%M')} has been cancelled."
+                f"Your interview request for {booking.interview_date.isoformat()} "
+                f"at {booking.interview_time.strftime('%H:%M')} has been cancelled."
             ),
-            booking=self._to_model(cancelled),
+            booking=self._to_model(booking, status="cancelled"),
             missing_fields=[],
             awaiting_confirmation=False,
             persisted=True,
@@ -424,14 +424,16 @@ class BookingService:
         )
 
     @staticmethod
-    def _to_model(booking: Booking) -> BookingModel:
+    def _to_model(
+        booking: Booking, *, status: Literal["confirmed", "cancelled"] = "confirmed"
+    ) -> BookingModel:
         return BookingModel(
             id=booking.id,
             name=booking.name,
             email=booking.email,
             interview_date=booking.interview_date,
             interview_time=booking.interview_time,
-            status=booking.status.value,
+            status=status,
             missing_fields=[],
             awaiting_confirmation=False,
         )

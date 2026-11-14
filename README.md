@@ -1,110 +1,119 @@
 # Intelligent Document Assistant
 
-A backend that turns PDFs and text files into a conversational, source-grounded RAG assistant, with an LLM-driven interview booking flow.
+A FastAPI backend that turns PDFs and text files into a conversational,
+source-grounded RAG assistant with an LLM-driven interview booking flow.
 
-Two REST APIs, built on FastAPI:
+- **Document ingestion** — upload a `.pdf` / `.txt`, extract the text, chunk it
+  with a selectable strategy, embed it, store the vectors in Qdrant and the
+  metadata in PostgreSQL.
+- **Conversational RAG** — ask questions across your documents with multi-turn
+  memory in Redis. The answer comes back with the passages it was built from.
+- **Interview booking** — the same chat endpoint extracts name, email, date and
+  time with an LLM and stores the booking once you confirm it.
 
-1. **Document Ingestion** — upload a `.pdf` / `.txt`, extract text, chunk it with a selectable strategy, embed it, store vectors in Qdrant and metadata in PostgreSQL.
-2. **Conversational RAG** — ask questions across your documents with multi-turn memory in Redis, and book an interview by just talking to it.
-
----
-
-## Table of contents
-
-- [Why](#why)
-- [Architecture](#architecture)
-- [The three data stores](#the-three-data-stores)
-- [Tech stack](#tech-stack)
-- [API 1 — Document ingestion](#api-1--document-ingestion)
-- [Chunking strategies](#chunking-strategies)
-- [API 2 — Conversational RAG](#api-2--conversational-rag)
-- [Interview booking](#interview-booking)
-- [Project structure](#project-structure)
-- [Running the project](#running-the-project)
-- [Design decisions](#design-decisions)
-- [Known limitations](#known-limitations)
-- [Constraints honoured](#constraints-honoured)
+No FAISS, no Chroma, no LangChain, no `RetrievalQAChain`, no UI.
 
 ---
 
-## Why
+## Run it
 
-The interesting part of a RAG system is not the API — it is what happens between the upload and the answer:
+```bash
+cp .env.example .env      # set LLM_API_KEY and LLM_MODEL
+docker compose up --build
+```
 
-- How you split a document determines whether a chunk is answerable at all.
-- Whether the *follow-up* question ("what about the second one?") resolves to the right passage decides whether multi-turn chat feels intelligent or random.
-- Whether a booking request is persisted only after the user explicitly confirms decides whether your database is trustworthy.
+That is the whole setup: PostgreSQL, Redis, Qdrant and the API come up
+together, and the Alembic migrations run on the way up.
 
-So the implementation is deliberately explicit about every stage: extraction, chunking, embedding, retrieval, prompt assembly, answer generation, memory and structured extraction are separate, typed, individually testable modules. No framework hides the interesting parts.
+```bash
+curl http://localhost:8000/health    # {"status":"ok"}
+curl http://localhost:8000/ready     # 200 + a per-dependency report
+open http://localhost:8000/docs       # interactive API docs
+```
 
-## Architecture
+The API is at <http://localhost:8000>. Only `/chat` needs an LLM key —
+ingestion, the probes and the tests do not.
 
-The core retrieval loop:
+**Local development** (no containers): `uv sync`, then
+`./scripts/setup_local.sh` for PostgreSQL and Redis, `uv run alembic upgrade
+head`, and `uv run uvicorn app.main:app --reload`. Qdrant then runs embedded
+on disk — same code, no server.
 
-![RAG architecture](docs/architecture.jpeg)
+---
 
-A user question is embedded with the same model used at ingestion, searched against the vector database, and the retrieved passages are merged with the original question before being handed to the LLM. The answer is grounded in those passages or it says it does not know.
+## The API
 
-The full system adds two things on top of that loop:
+| Method | Path | What it does |
+|--------|------|--------------|
+| `POST` | `/api/v1/documents/ingest` | Upload a `.pdf` / `.txt`; `chunking_strategy` is `fixed_size` or `recursive` |
+| `GET` | `/api/v1/documents` | List documents, paginated, filterable by status |
+| `GET` | `/api/v1/documents/{id}` | One document with its chunk count |
+| `DELETE` | `/api/v1/documents/{id}` | Remove the row and its vectors |
+| `POST` | `/api/v1/chat` | One conversational turn — a question, or a booking request |
+| `GET` | `/api/v1/bookings` | List bookings, paginated, filterable by email or date |
+| `GET` | `/health` | Liveness — the process is up |
+| `GET` | `/ready` | Readiness — pings PostgreSQL, Redis and Qdrant; `503` if any is down |
+
+Every failure comes back in one envelope, so a client never parses two error
+formats:
+
+```json
+{ "error": { "code": "validation_error", "message": "...", "details": {}, "request_id": "..." } }
+```
+
+### Try it
+
+```bash
+# ingest
+curl -F file=@handbook.pdf -F chunking_strategy=recursive \
+     http://localhost:8000/api/v1/documents/ingest
+
+# ask
+curl -X POST http://localhost:8000/api/v1/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"session_id": "demo", "message": "When is the quarterly review?"}'
+
+# book an interview - same endpoint
+curl -X POST http://localhost:8000/api/v1/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"session_id": "demo", "message": "I want to schedule an interview"}'
+```
+
+The chat response carries the answer, the sources it came from and the booking
+block:
+
+```json
+{
+  "session_id": "demo",
+  "answer": "The quarterly performance review is scheduled for the fifteenth of every month.",
+  "sources": [
+    { "document_id": "…", "filename": "handbook.pdf", "chunk_index": 0, "score": 0.57 }
+  ],
+  "booking": null,
+  "context_used": true
+}
+```
+
+---
+
+## How it works
 
 ```
                 ┌──────────────┐
   upload ──────▶│  Ingestion   │──▶ chunks ──▶ embeddings ──▶ Qdrant
-                │  (T04–T10)   │                              (semantics)
-                └──────┬───────┘
+                └──────┬───────┘                              (semantics)
                        │ metadata
                        ▼
                   PostgreSQL                        Redis
                 (documents, bookings)          (conversation memory)
 ```
 
-## The three data stores
-
-They exist for different reasons and are not interchangeable:
-
-| Store | Holds | Why it is there |
-|-------|-------|-----------------|
-| **Qdrant** | chunk vectors + payloads | Semantic similarity search. The only store that can answer "which passages are about this question?". |
-| **PostgreSQL** | document metadata, interview bookings | Relational truth: what documents exist, what did we chunk them into, who booked what. Transactional and queryable. |
-| **Redis** | conversation history per session | Fast, expiring, key-value scratch space for chat memory. A session disappears when it goes idle — that is the desired behaviour, not a bug. |
-
-## Tech stack
-
-| Component | Choice | Rationale |
-|-----------|--------|-----------|
-| Backend | FastAPI | Async, typed request/response models, auto-generated OpenAPI docs |
-| Language | Python 3.11+ | Modern type hints and `X \| Y` syntax |
-| Validation | Pydantic v2 | One schema set for HTTP contracts, LLM structured output and config |
-| PDF extraction | PyMuPDF | Reliable text extraction, pure wheel, no external binaries |
-| Chunking | Hand-written | The assignment asks for two strategies — implementing them is the point |
-| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) | Local, deterministic, free, 384 dimensions |
-| Vector DB | Qdrant | Runs embedded on disk or against a server — no cloud account, no container needed; supports payload filtering |
-| SQL DB | PostgreSQL + SQLAlchemy 2.0 (async) | Real relational modelling for documents and bookings |
-| Migrations | Alembic | Versioned schema, reproducible environments |
-| Chat memory | Redis | Session-based history with TTL |
-| LLM | OpenAI-compatible client | Swap Gemini / Groq / local vLLM by changing `.env`, not code |
-| Tests | pytest + httpx | Fast unit tests with fakes, integration tests against the real stack |
-| Containerization | Docker Compose | Postgres, Redis, Qdrant and the API in one command; migrations run on boot |
-
-**Why Qdrant and not Pinecone?** Pinecone is a hosted product — it needs an account and network access, and it makes the project impossible to run offline. Qdrant runs two ways behind the same client API and the same payload filters: as a server in Docker Compose (the default), or embedded on disk (the local dev default — no server, no container). The code is portable to Pinecone later if that is ever required.
-
-## API 1 — Document ingestion
-
-```
-POST /api/v1/documents/ingest      multipart/form-data
-GET  /api/v1/documents             list, paginated, filterable by status
-GET  /api/v1/documents/{id}        document detail
-DELETE /api/v1/documents/{id}      removes the row and its vectors
-```
-
-Request fields: `file` (the document), `chunking_strategy` (`fixed_size` or `recursive`), and optional `chunk_size` / `chunk_overlap` overrides.
-
-The ingestion flow:
+### Ingestion
 
 ```
 validate extension + size
   → SHA-256 content hash (duplicate detection)
-  → extract text
+  → extract text (PyMuPDF / plain text)
   → chunk with the selected strategy
   → embed every chunk
   → upsert vectors + payload to Qdrant
@@ -113,64 +122,57 @@ validate extension + size
 
 Two details that matter more than they look:
 
-- **Duplicate detection is by content hash, not filename.** Re-uploading the same file returns `409 Conflict` instead of creating a second copy of the same knowledge.
-- **PostgreSQL and Qdrant cannot share a transaction.** The row is written first with `status=processing`; if a later step fails, the row is marked `failed`, any partial vectors are deleted, and the request fails loudly. There is no state where a document silently exists in one store and not the other.
+- **Duplicates are detected by content hash, not filename.** Re-uploading the
+  same file returns `409 Conflict` instead of creating a second copy of the
+  same knowledge.
+- **PostgreSQL and Qdrant cannot share a transaction.** The row is written
+  first with `status=processing`; if a later step fails, the row is marked
+  `failed`, any partial vectors are deleted, and the request fails loudly.
 
-## Chunking strategies
+### The two chunking strategies
 
-Both strategies return the same structure (`content`, `chunk_index`, `document_id`, `token_count`, `strategy`, `start_char`, `end_char`), so they are fully interchangeable downstream.
+Both return the same structure (`content`, `chunk_index`, `document_id`,
+`token_count`, `strategy`, `start_char`, `end_char`), so they are
+interchangeable downstream.
 
-**A — Fixed size with overlap.** The text is tokenised, then windows of `chunk_size` tokens are emitted, advancing by `chunk_size - chunk_overlap` so consecutive chunks share context. Simple, uniform, and the overlap means a fact split across a boundary is still fully present in one of the chunks.
+- **Fixed size with overlap** — tokenise, then emit windows of `chunk_size`
+  tokens advancing by `chunk_size - chunk_overlap`, so consecutive chunks share
+  context and a fact split across a boundary is still whole in one of them.
+- **Recursive character splitting** — split on the most structural separator
+  available (paragraph → line → sentence → word), recursing only when a piece
+  is still too large, then re-merging up to `chunk_size` with overlap. A
+  heading stays attached to its paragraph; a sentence is not cut in half.
 
-**B — Recursive character splitting.** The text is split on the most structural separator available — paragraph (`\n\n`), then line (`\n`), then sentence (`. `), then word — recursing into a piece only when it is still too large, and re-merging the pieces back up to `chunk_size` with overlap. A heading stays attached to its paragraph; a sentence is not cut in half.
+Fixed-size is predictable and cheap; recursive produces chunks a human would
+recognise as coherent units. The strategy is chosen per upload and recorded on
+the document row.
 
-Fixed-size is predictable and cheap. Recursive produces chunks that a human would recognise as coherent units. Both are selectable per upload, and the strategy used is recorded on the document row.
+### The RAG pipeline
 
-## API 2 — Conversational RAG
-
-```
-POST /api/v1/chat                  send a message, get an answer
-```
-
-Request:
-
-```json
-{ "session_id": "session-123", "message": "What are the main concepts of machine learning?" }
-```
-
-Response:
-
-```json
-{
-  "session_id": "session-123",
-  "answer": "Machine learning primarily involves...",
-  "sources": [
-    { "document_id": "…", "filename": "machine_learning.pdf", "chunk_index": 3, "score": 0.82 }
-  ],
-  "booking": null,
-  "context_used": true
-}
-```
-
-### The custom RAG pipeline
-
-No `RetrievalQAChain`, no LangChain. Each stage is explicit:
+No `RetrievalQAChain`, no LangChain — every stage is explicit:
 
 1. **Load history** from Redis for the session.
-2. **Contextualise the question.** "What about the second one?" is useless on its own. If there is history, an LLM rewrites the question into a standalone one ("What are the advantages of supervised learning?"). With no history, no LLM call is made at all.
+2. **Contextualise the question.** "What about the second one?" is useless on
+   its own. With history, an LLM rewrites it into a standalone question; with
+   no history, no LLM call is made at all.
 3. **Embed** the rewritten question with the ingestion-time model.
-4. **Retrieve** the top-k chunks from Qdrant, optionally filtered to specific documents.
-5. **Assemble the prompt** — system rules plus the retrieved context, the conversation history and the original question.
+4. **Retrieve** the top-k chunks from Qdrant, optionally filtered to specific
+   documents.
+5. **Assemble the prompt** — system rules, the retrieved context, the history
+   and the original question.
 6. **Generate** the answer.
 7. **Persist** both messages to Redis, refreshing the session TTL.
 
-The rewritten question is used **only** for retrieval. The answer is always generated against what the user actually asked.
+The rewritten question is used **only** for retrieval; the answer is always
+generated against what the user actually asked. Two guards keep it honest: the
+system prompt forbids inventing information and requires the model to say when
+the documents do not contain the answer, and the retrieved context is returned
+as `sources` so every claim traces back to a file and a chunk index.
 
-Two guards keep the answer honest: the system prompt forbids inventing information and requires the model to say when the documents do not contain the answer, and the retrieved context is returned as `sources` so every claim can be traced back to a file and a chunk index.
+### Interview booking
 
-## Interview booking
-
-Booking is a different problem from asking a question, so it gets a different path — but it is still the same conversation.
+Booking is a different problem from asking a question, so it gets a different
+path — but it is the same conversation.
 
 ```
 User: I want to schedule an interview.
@@ -181,16 +183,47 @@ User: yes
 Bot:  Your interview request for 2026-11-20 at 14:00 has been recorded.
 ```
 
-```
-GET  /api/v1/bookings             list, paginated, filterable by email/date/status
-```
+- **Intent detection and extraction are one LLM call** returning a
+  Pydantic-validated object (`is_booking_request`, `name`, `email`, `date`,
+  `time`). The model is instructed never to invent a value it was not given.
+- **Partial details accumulate in Redis** under `booking_draft:{session_id}`, so
+  a bare "November 20" is understood in context and a corrected value
+  overwrites the old one.
+- **Nothing is written to PostgreSQL until the user confirms.** "Hmm" is not a
+  confirmation. This is the single rule that makes the bookings table
+  trustworthy.
+- **A slot belongs to one interview.** A unique index on
+  `(interview_date, interview_time)` makes double-booking impossible in the
+  database, whoever tries. The row *is* the booking — cancelling removes it,
+  which frees the slot.
+- **The assistant records a request** — it does not claim an interview with an
+  employer is scheduled, because there is no calendar behind it.
 
-- **Intent detection and extraction are one LLM call** returning a Pydantic-validated object (`is_booking_request`, `name`, `email`, `date`, `time`, `cancels_booking`). The model is instructed never to invent a value it was not given; a missing field stays missing.
-- **Partial details accumulate in Redis** under `booking_draft:{session_id}`, so a bare "November 20" is understood in context and a corrected value ("actually, call me Sahil") overwrites the old one.
-- **Nothing is written to PostgreSQL until the user explicitly confirms.** "Hmm" is not a confirmation. This is the single rule that makes the bookings table trustworthy.
-- **A slot belongs to one interview.** A partial unique index on `(interview_date, interview_time)` covers confirmed bookings only, so a taken slot is offered back to the user instead of being double-booked — and a cancelled booking releases it.
-- **The user can cancel.** "Cancel my interview" flips the row to `cancelled`: the slot is free again and the booking stops counting as confirmed.
-- **The assistant records a request** — it does not claim an interview with an employer is scheduled, because there is no calendar integration behind it.
+---
+
+## Design decisions
+
+- **Custom RAG, every stage explicit.** Retrieval → prompt → answer, with the
+  sources returned, so the answer can be checked rather than trusted.
+- **Two chunking strategies, selectable per upload.** Fixed for predictable
+  structure, recursive for prose; both are pure functions with no I/O.
+- **Redis list plus TTL for chat memory.** One key per session, capped in
+  length, expiring when idle — a session disappearing is the desired
+  behaviour, not a bug.
+- **A unique index guards the booking slot.** The database is the last line of
+  defence against double-booking; the application check before it only saves
+  the user a failed request.
+- **The booking check runs before retrieval.** It is cheap and unambiguous, and
+  a booking request should not pull document context into its reply.
+- **One uniform error envelope** for every failure, with a request id, so a
+  client never has to parse two error formats.
+- **Liveness and readiness are separate.** `/health` touches nothing, so a
+  database blip never restarts a healthy container; `/ready` pings all three
+  stores and answers `503` with the failing one named.
+- **The embedding model loads lazily.** `torch` is a multi-gigabyte install;
+  importing it at startup would make boot slow and the test suite painful.
+
+---
 
 ## Project structure
 
@@ -199,7 +232,7 @@ Layered so that each concern can be tested on its own:
 ```
 app/
 ├── api/          # routers — HTTP only, no business logic
-│   └── v1/       # documents.py, chat.py
+│   └── v1/       # documents.py, chat.py, bookings.py
 ├── core/         # settings, exception types
 ├── schemas/      # Pydantic request/response models
 ├── models/       # SQLAlchemy ORM models
@@ -211,354 +244,49 @@ app/
 └── utils/        # PDF and text extraction
 
 tests/{unit,integration}/
-scripts/          # setup_local.sh
+scripts/          # setup_local.sh, smoke.sh
 ```
 
-The dependency direction is one-way: `api → services → repositories/integrations`. Services never import from `api`, and the API layer never touches a database session directly.
+The dependency direction is one-way: `api → services → repositories/integrations`.
+Services never import from `api`, and the API layer never touches a database
+session directly.
 
-## Running the project
+---
 
-Two ways to run it.
-
-**Docker Compose** is the default: one command brings up PostgreSQL, Redis,
-Qdrant and the API, with the schema migrated on the way up. **Local** is for
-when you already have PostgreSQL and Redis installed — Qdrant then runs
-embedded on disk, and there is no container anywhere.
-
-Both options serve the same API on <http://localhost:8000>.
-
-### Option A — Docker Compose
-
-#### What you need
-
-| Requirement | Why | Notes |
-|-------------|-----|-------|
-| **Docker 24+** with the Compose plugin | runs the four services | `docker compose version` |
-| **An OpenAI-compatible LLM key** | answering questions, booking extraction | only `/chat` needs it — ingestion and the probes do not |
-| **~3 GB disk** | the image is mostly `torch` | the embedding model itself is only ~90 MB, downloaded on first boot into a named volume |
-
-#### 1. Configure it
-
-```bash
-cp .env.example .env
-```
-
-`.env` is where every setting lives (secrets never go in the code). The only
-thing you normally have to change is the LLM:
-
-```bash
-LLM_API_KEY=sk-...              # your provider key
-LLM_MODEL=gpt-4o-mini           # any model your provider exposes
-LLM_BASE_URL=                   # leave empty for OpenAI; set it for Groq/Gemini/vLLM
-```
-
-Provider examples:
-
-| Provider | `LLM_API_KEY` | `LLM_BASE_URL` | `LLM_MODEL` |
-|----------|---------------|----------------|-------------|
-| OpenAI | `sk-...` | *(empty)* | `gpt-4o-mini` |
-| Groq | `gsk_...` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
-| Gemini (OpenAI-compat) | `AIza...` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` |
-| Local vLLM | `anything` (non-empty) | `http://localhost:8001/v1` | whatever you served |
-
-Everything else in `.env` has a working default. The compose file overrides
-the three service URLs (`DATABASE_URL`, `REDIS_URL`, `QDRANT_URL`) so they
-point at the containers — you do not need to change them.
-
-#### 2. Start everything
-
-```bash
-docker compose up --build
-```
-
-The first build downloads the CPU build of `torch` and takes a few minutes.
-After that:
-
-| Service | URL |
-|---------|-----|
-| API | <http://localhost:8000> |
-| Interactive docs | <http://localhost:8000/docs> |
-| OpenAPI schema | <http://localhost:8000/openapi.json> |
-| Qdrant dashboard | <http://localhost:6333/dashboard> |
-
-The API waits for PostgreSQL and Redis to report healthy, applies the Alembic
-migrations, and only then starts serving.
-
-#### 3. Check it is alive
-
-```bash
-curl http://localhost:8000/health    # {"status":"ok"} — the process is up
-curl http://localhost:8000/ready     # 200 + a per-dependency report, or 503
-```
-
-`/health` is **liveness**: it touches nothing, so a database blip never
-restarts a healthy container. `/ready` is **readiness**: it pings PostgreSQL,
-Redis and Qdrant and answers `503` if any of them is unreachable. That is the
-one to point a load balancer at.
-
-```json
-{
-  "status": "ready",
-  "checks": { "postgres": "ok", "redis": "ok", "qdrant": "ok" }
-}
-```
-
-### Option B — Local, without Docker
-
-#### What you need
-
-| Requirement | Why | Notes |
-|-------------|-----|-------|
-| **Python 3.11+** | the app's language | pinned in `.python-version`; `uv` installs it for you |
-| **[uv](https://docs.astral.sh/uv/)** | dependency + environment manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **PostgreSQL 14+** | document metadata, bookings | client binaries only (`initdb`, `pg_ctl`, `psql`, `createdb`) |
-| **Redis 6+** (or Valkey) | conversation memory | client binaries only (`redis-server`, `redis-cli`) |
-| **An OpenAI-compatible LLM key** | answering questions, booking extraction | only `/chat` needs it — ingestion and the tests do not |
-| **~6 GB disk, ~2 GB RAM** | `torch` + CUDA wheels dominate the install | the embedding model itself is only ~90 MB, downloaded once on first use |
-
-No Docker, no Qdrant server, no cloud account. Qdrant runs embedded on disk.
-
-Install the system packages:
-
-```bash
-sudo pacman -S postgresql redis            # Arch / CachyOS
-# sudo apt install postgresql redis-server  # Debian / Ubuntu
-# brew install postgresql@16 redis          # macOS
-```
-
-#### 1. Get the code and install the dependencies
-
-```bash
-git clone git@github.com:Sahahahil/Intelligent-Document-Assistant.git
-cd Intelligent-Document-Assistant
-uv sync                 # creates .venv with Python 3.11 and installs everything
-```
-
-`uv sync` installs the app and the dev tools (pytest, ruff, mypy). It also pulls
-`torch` — expect a large first download.
-
-#### 2. Configure it
-
-```bash
-cp .env.example .env
-```
-
-Same `.env` as the Docker path. The difference: `QDRANT_URL` is left empty, so
-Qdrant runs embedded on disk at `QDRANT_PATH` instead of against a server.
-
-#### 3. Start PostgreSQL and Redis
-
-```bash
-./scripts/setup_local.sh
-```
-
-The script is idempotent — run it as often as you like. It creates a private
-PostgreSQL cluster in `~/.local/share/ida-postgres`, creates the `document_db`
-role and database, starts both services, and prints the URLs it used.
-
-You do **not** need to run a system-wide PostgreSQL or Redis; the script starts
-its own on the default ports (5432 / 6379).
-
-#### 4. Create the schema
-
-```bash
-uv run alembic upgrade head
-```
-
-This creates the `documents` and `bookings` tables and the indexes. It is safe
-to re-run — Alembic tracks what has been applied.
-
-#### 5. Start the API
-
-```bash
-uv run uvicorn app.main:app --reload
-```
-
-- API: <http://localhost:8000>
-- Interactive docs: <http://localhost:8000/docs>
-- OpenAPI schema: <http://localhost:8000/openapi.json>
-
-The first request that needs embeddings downloads the model
-(`sentence-transformers/all-MiniLM-L6-v2`, ~90 MB) into the HuggingFace cache.
-After that it is local.
-
-> The Docker and local paths bind the same ports (5432, 6379, 8000). Stop one
-> before starting the other — `docker compose down` first.
-
-### Try it
-
-**Ingest a document** — `.pdf` or `.txt`, up to 20 MB:
-
-```bash
-curl -F file=@machine_learning.pdf -F chunking_strategy=recursive \
-     http://localhost:8000/api/v1/documents/ingest
-```
-
-```json
-{
-  "document_id": "30ad1c7f-676f-4bac-9a40-81f5792f40a4",
-  "filename": "machine_learning.pdf",
-  "status": "completed",
-  "chunking_strategy": "recursive",
-  "total_chunks": 24,
-  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
-  "embedding_dim": 384,
-  "duration_ms": 4210
-}
-```
-
-`chunking_strategy` is `recursive` (default) or `fixed_size`; `chunk_size` and
-`chunk_overlap` can be passed as extra form fields to override the defaults.
-Re-uploading the same file returns `409 Conflict` — duplicates are detected by
-content hash.
-
-**Ask a question:**
-
-```bash
-curl -X POST http://localhost:8000/api/v1/chat \
-     -H 'Content-Type: application/json' \
-     -d '{"session_id": "demo", "message": "What is supervised learning?"}'
-```
-
-```json
-{
-  "session_id": "demo",
-  "answer": "Supervised learning is ...",
-  "sources": [
-    { "document_id": "…", "filename": "machine_learning.pdf", "chunk_index": 3, "score": 0.82 }
-  ],
-  "booking": null,
-  "context_used": true
-}
-```
-
-The same `session_id` keeps the conversation going — follow-up questions are
-rewritten into standalone ones before retrieval.
-
-**Book an interview** — same endpoint, no extra flag:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/chat \
-     -H 'Content-Type: application/json' \
-     -d '{"session_id": "demo", "message": "I want to schedule an interview"}'
-```
-
-The assistant asks for name, email, date and time, one turn at a time, and
-writes the row to PostgreSQL only after you confirm.
-
-**List and delete documents:**
-
-```bash
-curl "http://localhost:8000/api/v1/documents?limit=10&status=completed"
-curl http://localhost:8000/api/v1/documents/<document_id>
-curl -X DELETE http://localhost:8000/api/v1/documents/<document_id>
-```
-
-**Read the bookings back:**
-
-```bash
-curl "http://localhost:8000/api/v1/bookings?limit=10"
-curl "http://localhost:8000/api/v1/bookings?email=sahil@example.com&status=confirmed"
-```
-
-### Run the tests
-
-The suite runs on your machine — it needs no containers at all.
+## Tests
 
 ```bash
 uv run pytest                    # unit tests — no network, no database
 uv run pytest -m integration     # against the local PostgreSQL and Redis
-uv run pytest -m model           # downloads and runs the real embedding model
+./scripts/smoke.sh              # the whole stack, end to end
 ```
 
-The default run excludes the last two. The embedding model (~90 MB) is fetched
-from HuggingFace on first use and cached; the suite never needs it because the
-unit tests run against a fake model. It runs on the GPU when one is available
-and falls back to CPU otherwise.
+The unit tests run against fakes — the LLM, the vector store and the session
+are stubbed, so the suite is fast and needs nothing running. The integration
+tests run against the real PostgreSQL and Redis. `mypy --strict` is clean, and
+`ruff` is the only linter.
 
-### Smoke test
+The smoke script is the end-to-end check: it boots Compose, waits for
+`/ready`, ingests a PDF, lists it, asks a question, deletes it, reads a
+stored booking back and asserts the error envelope on a blank message. It
+cleans up after itself, and it passes without an LLM key (the chat turn is then
+expected to answer `502` — the API is up, the upstream is not).
 
-One script that proves the whole thing works, the way a grader would check it:
-
-```bash
-./scripts/smoke.sh          # build, boot the stack, drive both APIs, tear down
-./scripts/smoke.sh --keep   # ...and leave the stack running afterwards
-```
-
-It boots Docker Compose, waits for `/ready`, ingests a PDF, lists it, asks a
-question, deletes it, reads a stored booking back, and asserts the error
-envelope on a blank message. An LLM key is optional: without one the chat turn
-is expected to answer `502` — the API is up, the upstream is not — and the
-script still passes. The script stops the stack when it finishes; the data
-survives, because the volumes are kept. It cleans up after itself: the
-document it uploads and the booking it seeds are both removed.
-
-Note that Compose publishes PostgreSQL on the host's `5432`, so the local
-integration tests use that same database — bring the stack back up with
-`docker compose up -d` after a smoke run. The integration fixture empties
-`bookings` and `documents` before each test, so that database is a test
-database, not one to keep real data in.
-
-### Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `502 "LLM_API_KEY is not configured"` | no key in `.env` | set `LLM_API_KEY` and `LLM_MODEL`; ingestion still works without them |
-| `503` from `/ready` | one of Postgres / Redis / Qdrant is down | the body names the failing one: `{"status": "not_ready", "checks": {...}}` |
-| `connection refused` on `:5432` / `:6379` | services not running | `docker compose up -d postgres redis`, or `./scripts/setup_local.sh` |
-| `alembic.util.exc.CommandError` / missing tables | migrations not applied | `uv run alembic upgrade head` (the container does this on boot) |
-| `409 Conflict` on upload | the same file was already ingested | duplicate detection is by content hash — upload different content, or `DELETE` the old document |
-| `500` "Storage folder ./qdrant_data is already accessed by another instance of Qdrant client" | a second app instance is running | embedded Qdrant takes a lock on its directory — stop the other process, or point `QDRANT_URL` at a Qdrant server (the Docker path does) |
-| `torch` download stalls | slow network | the model is fetched once and cached — in `~/.cache/huggingface` locally, in the `hf_cache` volume in Docker |
-| The first `docker compose up --build` is slow | the image downloads CPU `torch` | ~3 GB once; later builds reuse the layer |
-| Nothing is retrieved | the document was ingested but the question is out of scope | check `GET /api/v1/documents/<id>` — `status` must be `completed` |
-
-### Stopping and resetting
-
-```bash
-# --- Docker ---
-docker compose down          # stop the services, keep the data
-docker compose down -v       # stop and wipe the data volumes too
-
-# --- Local ---
-# stop the app: Ctrl-C in the terminal running uvicorn
-
-# stop the services
-pg_ctl -D ~/.local/share/ida-postgres stop
-redis-cli shutdown
-
-# wipe everything (schema, data, vectors) and start over
-rm -rf qdrant_data ~/.local/share/ida-postgres
-./scripts/setup_local.sh
-uv run alembic upgrade head
-```
-
-## Design decisions
-
-A few choices worth defending in a review:
-
-- **Chunkers are pure and synchronous.** No I/O, no globals, no config reads from inside them — so they are trivially testable and the strategy is chosen in exactly one place (the factory).
-- **Token counting is a whitespace estimate, not a model tokenizer.** It is approximate. A `ponytail:` comment in the code marks the ceiling and the upgrade path.
-- **Embedding model truncation is a real constraint.** `all-MiniLM-L6-v2` truncates at 256 word-pieces, so the default chunk size is 200 words, not the 500 you see in most tutorials. Chunks larger than that would be silently truncated and lose their tails.
-- **The embedding model loads lazily.** `torch` and its CUDA wheels are a multi-gigabyte install; importing it at startup would make boot slow and the test suite painful.
-- **The booking check runs before retrieval.** It is cheap and unambiguous, and a booking request should not pull document context into its reply.
-- **Qdrant payloads carry the chunk text.** Retrieval never re-embeds; the trade-off is payload size, which is acceptable at this scale.
-- **The LLM retry policy is the SDK's.** It retries 429 and 5xx twice with backoff and never retries a 4xx; a second retry loop on top would only double the attempts and hide the behaviour.
-- **One uniform error envelope** for every failure — `{"error": {"code", "message", "details", "request_id"}}` — so a client never has to parse two error formats.
-- **Liveness and readiness are separate.** `/health` touches nothing, so a database blip never restarts a healthy container; `/ready` pings all three stores and answers `503` with the failing one named. A readiness failure reports the exception *type* only — a database error message can contain the connection string, and the probe is unauthenticated.
+---
 
 ## Known limitations
 
-Stated up front rather than discovered later:
-
-- No authentication or rate limiting — out of scope for this assignment, but the routes are structured so a dependency can be added in one place.
-- No streaming responses.
-- No reranking — retrieval is single-stage vector search. A cross-encoder would help only if evaluation shows recall is the bottleneck.
-- Scanned / image-only PDFs are not supported (no OCR).
-- The embedding model is loaded per process, so scaling out means scaling memory.
-- In the local (non-Docker) path Qdrant runs embedded and takes a filesystem lock on its directory, so only one worker can serve at a time. The Docker path uses a Qdrant server and has no such limit.
+- No authentication or rate limiting — the routes are structured so a
+  dependency can be added in one place.
+- No streaming responses, no reranking, no OCR for scanned PDFs.
+- The embedding model truncates at 256 word-pieces, so the default chunk size
+  is 200 words; larger chunks would silently lose their tails.
+- PostgreSQL and Qdrant are not updated in a single transaction; the
+  compensating delete in the ingestion service is the mitigation, not a
+  guarantee.
 - The booking intent check costs one extra LLM call per chat turn.
-- Postgres and Qdrant are not updated in a single transaction; the compensating-delete approach in the ingestion service is the mitigation, not a guarantee.
+
+---
 
 ## Constraints honoured
 

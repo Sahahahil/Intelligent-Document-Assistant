@@ -10,7 +10,7 @@ import logging
 from collections.abc import Sequence
 from datetime import date, time, timedelta
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from redis.asyncio import Redis
@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import UpstreamError, ValidationError
 from app.integrations.llm import ChatMessage, LLMClient
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking
 from app.repositories.booking_repository import BookingRepository
 from app.schemas.booking import BookingExtraction, BookingFields
 from app.services.booking_service import (
@@ -264,7 +264,7 @@ class FakeRepository:
         # A slot taken between the check and the insert - invisible until
         # an insert has been attempted.
         self.raced: dict[tuple[date, time], Booking] = {}
-        self.cancelled: list[Booking] = []
+        self.cancelled: list[UUID] = []
         self.error: Exception | None = None
         self.attempted = False
 
@@ -274,9 +274,9 @@ class FakeRepository:
             found = self.raced.get((when, at))
         return found
 
-    async def find_confirmed(self, session_id: str) -> Booking | None:
+    async def find_for_session(self, session_id: str) -> Booking | None:
         for booking in [*self.created, *self.conflicts.values(), *self.raced.values()]:
-            if booking.session_id == session_id and booking.status == BookingStatus.CONFIRMED:
+            if booking.session_id == session_id:
                 return booking
         return None
 
@@ -288,10 +288,14 @@ class FakeRepository:
         self.created.append(booking)
         return booking
 
-    async def cancel(self, booking: Booking) -> Booking:
-        booking.status = BookingStatus.CANCELLED
-        self.cancelled.append(booking)
-        return booking
+    async def delete(self, booking_id: UUID) -> None:
+        """The row was the booking - removing it frees the slot."""
+        self.cancelled.append(booking_id)
+        self.created = [b for b in self.created if b.id != booking_id]
+        for store in (self.conflicts, self.raced):
+            for slot, booking in list(store.items()):
+                if booking.id == booking_id:
+                    del store[slot]
 
 
 class FakeExtractor:
@@ -431,7 +435,6 @@ async def test_the_confirmation_writes_exactly_one_row(
     assert booking.email == "sahil@example.com"
     assert booking.interview_date == TOMORROW
     assert booking.interview_time == time(14, 0)
-    assert booking.status == BookingStatus.CONFIRMED
     assert booking.session_id == SESSION
     assert turn.booking is not None
     assert turn.booking.status == "confirmed"
@@ -512,7 +515,6 @@ async def test_a_slot_taken_by_someone_else_is_not_booked(
         email="someone@example.com",
         interview_date=TOMORROW,
         interview_time=time(14, 0),
-        status=BookingStatus.CONFIRMED,
     )
     repo.conflicts[(TOMORROW, time(14, 0))] = taken
     script(
@@ -550,7 +552,6 @@ async def test_the_same_person_does_not_book_a_slot_twice(
         email="sahil@example.com",
         interview_date=TOMORROW,
         interview_time=time(14, 0),
-        status=BookingStatus.CONFIRMED,
     )
     repo.conflicts[(TOMORROW, time(14, 0))] = existing
     script(
@@ -582,7 +583,6 @@ async def test_a_slot_taken_between_the_check_and_the_insert_is_caught(
         email="someone@example.com",
         interview_date=TOMORROW,
         interview_time=time(14, 0),
-        status=BookingStatus.CONFIRMED,
     )
     repo.raced[(TOMORROW, time(14, 0))] = taken
     repo.error = IntegrityError("insert", {}, Exception("duplicate key"))
@@ -622,7 +622,7 @@ async def test_an_integrity_error_that_is_not_a_slot_conflict_is_raised(
         await booking_service.handle_turn(session_id=SESSION, message="yes", history=[])
 
 
-async def test_a_cancel_turn_cancels_the_confirmed_booking(
+async def test_a_cancel_turn_removes_the_booking(
     booking_service: BookingService, extractor: FakeExtractor, repo: FakeRepository
 ) -> None:
     booked = Booking(
@@ -632,7 +632,6 @@ async def test_a_cancel_turn_cancels_the_confirmed_booking(
         email="sahil@example.com",
         interview_date=TOMORROW,
         interview_time=time(14, 0),
-        status=BookingStatus.CONFIRMED,
     )
     repo.created.append(booked)
     extractor.extractions["cancel my interview"] = BookingExtraction(cancels_booking=True)
@@ -643,8 +642,9 @@ async def test_a_cancel_turn_cancels_the_confirmed_booking(
 
     assert turn.is_booking is True
     assert turn.persisted is True
-    assert repo.cancelled == [booked]
-    assert booked.status == BookingStatus.CANCELLED
+    # The row was the booking - cancelling removes it, which frees the slot.
+    assert repo.cancelled == [booked.id]
+    assert repo.created == []
     assert turn.booking is not None
     assert turn.booking.status == "cancelled"
     assert turn.reply is not None

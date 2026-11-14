@@ -14,7 +14,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking
 from app.repositories.booking_repository import BookingRepository
 
 pytestmark = pytest.mark.integration
@@ -34,7 +34,6 @@ async def test_the_persisted_booking_is_read_back(
             email=email,
             interview_date=TOMORROW,
             interview_time=time(14, 0),
-            status=BookingStatus.CONFIRMED,
         )
     )
 
@@ -49,12 +48,12 @@ async def test_the_persisted_booking_is_read_back(
     assert item["email"] == email
     assert item["interview_date"] == TOMORROW.isoformat()
     assert item["interview_time"] == "14:00:00"
-    assert item["status"] == "confirmed"
 
 
-async def test_a_cancelled_booking_is_listed_as_cancelled(
+async def test_a_deleted_booking_is_not_listed(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
+    """Cancelling removes the row, so it disappears from the list."""
     repo = BookingRepository(db_session)
     email = f"{uuid4().hex}@example.com"
     booking = await repo.create(
@@ -64,12 +63,11 @@ async def test_a_cancelled_booking_is_listed_as_cancelled(
             email=email,
             interview_date=TOMORROW,
             interview_time=time(14, 0),
-            status=BookingStatus.CONFIRMED,
         )
     )
-    await repo.cancel(booking)
+    await repo.delete(booking.id)
 
     response = await client.get("/api/v1/bookings", params={"email": email})
 
     assert response.status_code == 200
-    assert response.json()["items"][0]["status"] == "cancelled"
+    assert response.json()["total"] == 0

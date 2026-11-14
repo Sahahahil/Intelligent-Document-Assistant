@@ -6,7 +6,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_booking_repository
-from app.models.booking import BookingStatus
 from app.repositories.booking_repository import BookingRepository
 from app.schemas.booking import BookingListResponse, BookingSummary
 
@@ -20,7 +19,6 @@ async def list_bookings(
     offset: Annotated[int, Query(ge=0)] = 0,
     email: Annotated[str | None, Query(description="Exact email address")] = None,
     interview_date: Annotated[date | None, Query(description="The interview date")] = None,
-    booking_status: Annotated[BookingStatus | None, Query(alias="status")] = None,
 ) -> BookingListResponse:
     """A page of bookings, newest first."""
     rows, total = await booking_repo.list(
@@ -28,7 +26,6 @@ async def list_bookings(
         offset=offset,
         email=email,
         interview_date=interview_date,
-        status=booking_status,
     )
     return BookingListResponse(
         items=[BookingSummary.model_validate(row) for row in rows],

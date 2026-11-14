@@ -137,12 +137,12 @@ printf 'deleted %s\n' "$DOC_ID"
 
 # --- the bookings that were stored -----------------------------------------
 step "API 2 - a stored booking is read back"
-# 23:45 is a slot nobody books, and the slot index covers confirmed bookings
-# only - so the seed can never collide with a real booking.
+# 23:45 is a slot nobody books, and the slot index covers every booking -
+# so the seed can never collide with a real one.
 "${COMPOSE[@]}" exec -T postgres psql -U document_db -d document_db -q -c \
     "DELETE FROM bookings WHERE email = 'smoke@example.com';
-     INSERT INTO bookings (session_id, name, email, interview_date, interview_time, status)
-     VALUES ('smoke', 'Smoke Test', 'smoke@example.com', CURRENT_DATE + 1, '23:45', 'confirmed')
+     INSERT INTO bookings (session_id, name, email, interview_date, interview_time)
+     VALUES ('smoke', 'Smoke Test', 'smoke@example.com', CURRENT_DATE + 1, '23:45')
      ON CONFLICT DO NOTHING;"
 BOOKINGS="$(curl -fsS "$API/api/v1/bookings?email=smoke@example.com")"
 case "$BOOKINGS" in
