@@ -31,9 +31,16 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def ingest_document(
     file: Annotated[UploadFile, File(description="PDF or TXT document")],
     service: Annotated[IngestionService, Depends(get_ingestion_service)],
-    chunking_strategy: Annotated[ChunkingStrategy, Form()] = ChunkingStrategy.RECURSIVE,
-    chunk_size: Annotated[int | None, Form()] = None,
-    chunk_overlap: Annotated[int | None, Form()] = None,
+    chunking_strategy: Annotated[
+        ChunkingStrategy, Form(description="How the text is split into chunks")
+    ] = ChunkingStrategy.RECURSIVE,
+    chunk_size: Annotated[
+        int | None, Form(description="Words per chunk. 0 or empty uses CHUNK_SIZE")
+    ] = None,
+    chunk_overlap: Annotated[
+        int | None,
+        Form(description="Words shared by neighbouring chunks. 0 or empty uses CHUNK_OVERLAP"),
+    ] = None,
 ) -> DocumentIngestResponse:
     """Run an uploaded document through the ingestion pipeline."""
     settings = get_settings()

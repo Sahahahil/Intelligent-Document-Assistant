@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.core.config import get_settings
 from app.core.exceptions import (
     ConflictError,
     ExtractionError,
@@ -239,6 +240,17 @@ async def test_the_chunk_parameters_are_recorded(
     document = next(iter(repo.documents.values()))
     assert document.chunk_size == 50
     assert document.chunk_overlap == 10
+
+
+async def test_a_zero_chunk_size_means_the_default(
+    service: IngestionService, repo: FakeDocumentRepository
+) -> None:
+    """An empty number field in the API docs is sent as 0 - that is "not set"."""
+    await ingest(service, chunk_size=0, chunk_overlap=0)
+
+    document = next(iter(repo.documents.values()))
+    assert document.chunk_size == get_settings().chunk_size
+    assert document.chunk_overlap == get_settings().chunk_overlap
 
 
 async def test_a_smaller_chunk_size_makes_more_chunks(service: IngestionService) -> None:

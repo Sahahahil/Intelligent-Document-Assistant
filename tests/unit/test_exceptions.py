@@ -1,5 +1,7 @@
+from typing import Annotated
+
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from httpx import ASGITransport, AsyncClient
 
 from app.core.exceptions import AppError, NotFoundError, register_exception_handlers
@@ -16,6 +18,10 @@ def build_app() -> FastAPI:
     @app.get("/crash")
     async def crash() -> None:
         raise RuntimeError("secret internal detail")
+
+    @app.post("/upload")
+    async def upload(file: Annotated[UploadFile, File()]) -> None:
+        return None
 
     return app
 
@@ -56,6 +62,18 @@ async def test_unknown_route_uses_the_same_envelope() -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_a_file_sent_as_text_says_so() -> None:
+    """FastAPI's own message about this one confuses people."""
+    app = build_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.post("/upload", data={"file": "just text"})
+
+    assert response.status_code == 422
+    errors = response.json()["error"]["details"]["errors"]
+    assert errors[0]["msg"] == "The file must be sent as an upload, not as text."
 
 
 def test_error_codes_are_unique() -> None:

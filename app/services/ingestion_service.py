@@ -82,8 +82,10 @@ def _resolve_chunk_params(
     chunk_size: int | None, chunk_overlap: int | None, settings: Settings
 ) -> tuple[int, int]:
     """The chunk parameters actually used, so the row records the truth."""
-    size = settings.chunk_size if chunk_size is None else chunk_size
-    overlap = settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    # A zero means "not set": an empty number field in the API docs is sent
+    # as 0, and that should fall back to the configured default.
+    size = chunk_size if chunk_size else settings.chunk_size
+    overlap = chunk_overlap if chunk_overlap else settings.chunk_overlap
     if size <= 0:
         raise ValidationError("chunk_size must be > 0")
     if overlap < 0:

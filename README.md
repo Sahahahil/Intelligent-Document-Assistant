@@ -90,6 +90,10 @@ curl localhost:8000/ready      # {"status":"ready","checks":{"postgres":"ok","re
 open localhost:8000/docs       # interactive API docs
 ```
 
+In the docs page: click **Try it out**, then pick the file, then **Execute**.
+The file has to be attached after *Try it out* — an empty `chunk_size` field
+is sent as `0`, which means "use the default".
+
 Only `/chat` needs an LLM — ingestion, the probes and the tests do not.
 
 **Without Docker:** `uv sync`, then `./scripts/setup_local.sh` (starts
