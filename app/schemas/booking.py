@@ -22,6 +22,7 @@ class BookingExtraction(BaseModel):
     is_booking_request: bool = False
     fields: BookingFields = Field(default_factory=BookingFields)
     confirmed_by_user: bool = False
+    cancels_booking: bool = False
 
 
 class BookingModel(BaseModel):

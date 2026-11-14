@@ -39,11 +39,11 @@ class Booking(Base):
             "status IN ('confirmed', 'cancelled')",
             name="ck_bookings_status",
         ),
-        # No double-booking the same slot for the same person. Only confirmed
-        # bookings occupy a slot — a cancelled one must not block a rebooking.
+        # One interview per slot: the slot is the scarce resource, so two
+        # different people cannot take it either. Only confirmed bookings
+        # occupy a slot — a cancelled one must not block a rebooking.
         Index(
             "uq_bookings_slot",
-            "email",
             "interview_date",
             "interview_time",
             unique=True,

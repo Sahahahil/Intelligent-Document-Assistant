@@ -152,4 +152,5 @@ async def test_concurrent_appends_both_land(store: ConversationStore, session_id
 
     history = await store.get_history(session_id)
 
-    assert [message.content for message in history] == ["first", "second"]
+    # Both land - which one lands first is up to the scheduler.
+    assert sorted(message.content for message in history) == ["first", "second"]

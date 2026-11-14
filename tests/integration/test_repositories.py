@@ -94,11 +94,11 @@ async def test_booking_slot_conflict(db_session: AsyncSession) -> None:
     )
     await repo.create(booking)
 
-    found = await repo.find_conflict(email, date(2026, 11, 20), time(14, 0))
+    found = await repo.find_conflict(date(2026, 11, 20), time(14, 0))
     assert found is not None
     assert found.id == booking.id
 
-    assert await repo.find_conflict(email, date(2026, 11, 21), time(14, 0)) is None
+    assert await repo.find_conflict(date(2026, 11, 21), time(14, 0)) is None
 
 
 async def test_only_confirmed_bookings_occupy_a_slot(db_session: AsyncSession) -> None:
@@ -117,7 +117,7 @@ async def test_only_confirmed_bookings_occupy_a_slot(db_session: AsyncSession) -
             status=BookingStatus.CANCELLED,
         )
     )
-    assert await repo.find_conflict(email, when, at) is None
+    assert await repo.find_conflict(when, at) is None
 
     # The database agrees: a cancelled row does not block a confirmed one.
     await repo.create(
@@ -130,17 +130,17 @@ async def test_only_confirmed_bookings_occupy_a_slot(db_session: AsyncSession) -
             status=BookingStatus.CONFIRMED,
         )
     )
-    assert await repo.find_conflict(email, when, at) is not None
+    assert await repo.find_conflict(when, at) is not None
 
 
 async def test_two_confirmed_bookings_in_the_same_slot_are_rejected(
     db_session: AsyncSession,
 ) -> None:
+    """The slot is taken by whoever booked it - not by one person only."""
     repo = BookingRepository(db_session)
-    email = f"{uuid4().hex}@example.com"
     when, at = date(2026, 11, 20), time(14, 0)
 
-    def make() -> Booking:
+    def make(email: str) -> Booking:
         return Booking(
             session_id="s1",
             name="Sahil",
@@ -150,7 +150,50 @@ async def test_two_confirmed_bookings_in_the_same_slot_are_rejected(
             status=BookingStatus.CONFIRMED,
         )
 
-    await repo.create(make())
+    await repo.create(make(f"{uuid4().hex}@example.com"))
     with pytest.raises(IntegrityError):
-        await repo.create(make())
+        await repo.create(make(f"{uuid4().hex}@example.com"))
     await db_session.rollback()
+
+
+async def test_a_booking_can_be_cancelled_and_the_slot_freed(
+    db_session: AsyncSession,
+) -> None:
+    repo = BookingRepository(db_session)
+    when, at = date(2026, 11, 20), time(14, 0)
+    booking = await repo.create(
+        Booking(
+            session_id="s1",
+            name="Sahil",
+            email=f"{uuid4().hex}@example.com",
+            interview_date=when,
+            interview_time=at,
+            status=BookingStatus.CONFIRMED,
+        )
+    )
+
+    cancelled = await repo.cancel(booking)
+
+    assert cancelled.status == BookingStatus.CANCELLED
+    assert await repo.find_conflict(when, at) is None
+    assert await repo.find_confirmed("s1") is None
+
+
+async def test_the_confirmed_booking_of_a_session_is_found(db_session: AsyncSession) -> None:
+    repo = BookingRepository(db_session)
+    booking = await repo.create(
+        Booking(
+            session_id="s1",
+            name="Sahil",
+            email=f"{uuid4().hex}@example.com",
+            interview_date=date(2026, 11, 20),
+            interview_time=time(14, 0),
+            status=BookingStatus.CONFIRMED,
+        )
+    )
+
+    found = await repo.find_confirmed("s1")
+
+    assert found is not None
+    assert found.id == booking.id
+    assert await repo.find_confirmed("other") is None

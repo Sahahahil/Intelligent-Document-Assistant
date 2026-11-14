@@ -181,9 +181,11 @@ User: yes
 Bot:  Your interview request for 2026-11-20 at 14:00 has been recorded.
 ```
 
-- **Intent detection and extraction are one LLM call** returning a Pydantic-validated object (`is_booking_request`, `name`, `email`, `date`, `time`). The model is instructed never to invent a value it was not given; a missing field stays missing.
+- **Intent detection and extraction are one LLM call** returning a Pydantic-validated object (`is_booking_request`, `name`, `email`, `date`, `time`, `cancels_booking`). The model is instructed never to invent a value it was not given; a missing field stays missing.
 - **Partial details accumulate in Redis** under `booking_draft:{session_id}`, so a bare "November 20" is understood in context and a corrected value ("actually, call me Sahil") overwrites the old one.
 - **Nothing is written to PostgreSQL until the user explicitly confirms.** "Hmm" is not a confirmation. This is the single rule that makes the bookings table trustworthy.
+- **A slot belongs to one interview.** A partial unique index on `(interview_date, interview_time)` covers confirmed bookings only, so a taken slot is offered back to the user instead of being double-booked — and a cancelled booking releases it.
+- **The user can cancel.** "Cancel my interview" flips the row to `cancelled`: the slot is free again and the booking stops counting as confirmed.
 - **The assistant records a request** — it does not claim an interview with an employer is scheduled, because there is no calendar integration behind it.
 
 ## Project structure

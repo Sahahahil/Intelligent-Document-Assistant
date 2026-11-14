@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.booking import BookingModel
 
@@ -17,6 +17,18 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128, pattern=SESSION_ID_PATTERN)
     message: str = Field(min_length=1, max_length=8000)
     document_ids: list[UUID] | None = None
+
+    @field_validator("message")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        """A message of only whitespace is not a message.
+
+        `min_length` counts the spaces, so the blank case is caught here.
+        """
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("message must not be blank")
+        return stripped
 
 
 class SourceModel(BaseModel):

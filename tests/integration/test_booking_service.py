@@ -167,10 +167,9 @@ async def test_the_same_slot_is_not_booked_twice(
     first = await service.handle_turn(session_id=session_id, message="yes", history=[])
 
     extractor.extractions["schedule an interview again"] = extraction
-    await service.handle_turn(
+    second = await service.handle_turn(
         session_id=session_id, message="schedule an interview again", history=[]
     )
-    second = await service.handle_turn(session_id=session_id, message="yes", history=[])
 
     assert first.persisted is True
     assert second.persisted is False
@@ -178,3 +177,80 @@ async def test_the_same_slot_is_not_booked_twice(
     assert second.booking.id == first.booking.id  # type: ignore[union-attr]
     count = await db_session.execute(select(func.count()).select_from(Booking))
     assert count.scalar_one() == 1
+
+
+async def test_another_person_cannot_take_the_same_slot(
+    service: BookingService,
+    db_session: AsyncSession,
+    extractor: ScriptedExtractor,
+    session_id: str,
+) -> None:
+    extractor.extractions["schedule an interview"] = BookingExtraction(
+        is_booking_request=True,
+        fields=BookingFields(
+            name="Sahil",
+            email="sahil@example.com",
+            interview_date=TOMORROW,
+            interview_time=time(14, 0),
+        ),
+    )
+    await service.handle_turn(session_id=session_id, message="schedule an interview", history=[])
+    await service.handle_turn(session_id=session_id, message="yes", history=[])
+
+    extractor.extractions["someone else"] = BookingExtraction(
+        is_booking_request=True,
+        fields=BookingFields(
+            name="Someone Else",
+            email="someone@example.com",
+            interview_date=TOMORROW,
+            interview_time=time(14, 0),
+        ),
+    )
+    turn = await service.handle_turn(session_id=session_id, message="someone else", history=[])
+
+    assert turn.persisted is False
+    assert turn.reply is not None
+    assert "already taken" in turn.reply
+    assert turn.missing_fields == ["date", "time"]
+    count = await db_session.execute(select(func.count()).select_from(Booking))
+    assert count.scalar_one() == 1
+
+
+async def test_a_cancelled_booking_frees_the_slot(
+    service: BookingService,
+    db_session: AsyncSession,
+    extractor: ScriptedExtractor,
+    session_id: str,
+) -> None:
+    extraction = BookingExtraction(
+        is_booking_request=True,
+        fields=BookingFields(
+            name="Sahil",
+            email="sahil@example.com",
+            interview_date=TOMORROW,
+            interview_time=time(14, 0),
+        ),
+    )
+    extractor.extractions["schedule an interview"] = extraction
+    await service.handle_turn(session_id=session_id, message="schedule an interview", history=[])
+    await service.handle_turn(session_id=session_id, message="yes", history=[])
+
+    extractor.extractions["cancel my interview"] = BookingExtraction(cancels_booking=True)
+    cancelled = await service.handle_turn(
+        session_id=session_id, message="cancel my interview", history=[]
+    )
+
+    assert cancelled.persisted is True
+    assert cancelled.booking is not None
+    assert cancelled.booking.status == "cancelled"
+
+    # The slot is free again - the index only covers confirmed bookings.
+    extractor.extractions["schedule an interview again"] = extraction
+    again = await service.handle_turn(
+        session_id=session_id, message="schedule an interview again", history=[]
+    )
+    assert again.awaiting_confirmation is True
+    booked = await service.handle_turn(session_id=session_id, message="yes", history=[])
+    assert booked.persisted is True
+    count = await db_session.execute(select(func.count()).select_from(Booking))
+    assert count.scalar_one() == 2

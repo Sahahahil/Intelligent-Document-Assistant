@@ -106,6 +106,21 @@ async def test_an_empty_message_is_rejected(client: AsyncClient) -> None:
     assert response.json()["error"]["code"] == "validation_error"
 
 
+async def test_a_whitespace_only_message_is_rejected(client: AsyncClient) -> None:
+    response = await client.post("/api/v1/chat", json={"session_id": "s1", "message": "   \n\t "})
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_the_message_is_trimmed(
+    client: AsyncClient, orchestrator: FakeOrchestrator
+) -> None:
+    await client.post("/api/v1/chat", json={"session_id": "s1", "message": "  hello  "})
+
+    assert orchestrator.requests[0].message == "hello"
+
+
 async def test_an_unsafe_session_id_is_rejected(client: AsyncClient) -> None:
     response = await client.post("/api/v1/chat", json={"session_id": "bad id!", "message": "hello"})
 

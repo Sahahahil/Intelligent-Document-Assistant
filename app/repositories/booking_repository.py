@@ -18,8 +18,8 @@ class BookingRepository:
         await self._session.refresh(booking)
         return booking
 
-    async def find_conflict(self, email: str, when: date, at: time) -> Booking | None:
-        """Return an existing confirmed booking for that person in that slot.
+    async def find_conflict(self, when: date, at: time) -> Booking | None:
+        """Return the confirmed booking that occupies that slot, whoever it is.
 
         Mirrors the `uq_bookings_slot` partial unique index, which only
         covers confirmed bookings — the repository and the database agree on
@@ -27,10 +27,26 @@ class BookingRepository:
         """
         result = await self._session.execute(
             select(Booking).where(
-                Booking.email == email,
                 Booking.interview_date == when,
                 Booking.interview_time == at,
                 Booking.status == BookingStatus.CONFIRMED,
             )
         )
         return result.scalar_one_or_none()
+
+    async def find_confirmed(self, session_id: str) -> Booking | None:
+        """The confirmed booking this session made, if it still has one."""
+        result = await self._session.execute(
+            select(Booking).where(
+                Booking.session_id == session_id,
+                Booking.status == BookingStatus.CONFIRMED,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def cancel(self, booking: Booking) -> Booking:
+        """Give the slot back: a cancelled booking no longer occupies it."""
+        booking.status = BookingStatus.CANCELLED
+        await self._session.commit()
+        await self._session.refresh(booking)
+        return booking
