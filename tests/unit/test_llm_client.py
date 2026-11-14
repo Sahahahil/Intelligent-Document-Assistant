@@ -125,6 +125,7 @@ async def test_the_json_response_format_is_requested(
 
 
 async def test_invalid_json_is_an_upstream_error(client: LLMClient, provider: FakeProvider) -> None:
+    """Garbage from the provider is an upstream error, however it arrives."""
     provider.responder = lambda request: httpx2.Response(200, json=completion("not json"))
 
     with pytest.raises(UpstreamError) as excinfo:
@@ -132,7 +133,7 @@ async def test_invalid_json_is_an_upstream_error(client: LLMClient, provider: Fa
             messages=[ChatMessage(role="user", content="hi")], schema=Booking
         )
 
-    assert "invalid JSON" in str(excinfo.value)
+    assert "no JSON that matches the schema" in str(excinfo.value)
 
 
 async def test_json_that_is_not_an_object_is_an_upstream_error(
@@ -173,8 +174,32 @@ async def test_complete_structured_tells_the_model_the_schema(
     )
 
     messages = provider.last_body["messages"]
-    assert "name" in messages[-1]["content"]
-    assert messages[0]["role"] == "user"
+    # The hint rides with the system prompt - a system message after the user
+    # turn makes a small model echo the schema instead of filling it in.
+    assert "name" in messages[0]["content"]
+    assert messages[0]["role"] == "system"
+
+
+async def test_complete_structured_keeps_the_schema_hint_with_the_system_prompt(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    provider.responder = lambda request: httpx2.Response(
+        200, json=completion('{"name": "Sahil", "email": "s@example.com"}')
+    )
+
+    await client.complete_structured(
+        messages=[
+            ChatMessage(role="system", content="You are a booking assistant."),
+            ChatMessage(role="user", content="hi"),
+        ],
+        schema=Booking,
+    )
+
+    messages = provider.last_body["messages"]
+    assert len(messages) == 2
+    assert "booking assistant" in messages[0]["content"]
+    assert "name" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
 
 
 async def test_complete_structured_with_a_bad_payload_is_an_upstream_error(
@@ -189,6 +214,72 @@ async def test_complete_structured_with_a_bad_payload_is_an_upstream_error(
 
     assert excinfo.value.details["errors"]
     assert excinfo.value.details["raw"] == {"name": "Sahil"}
+
+
+async def test_a_provider_without_json_mode_is_asked_again_in_plain_text(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    """A local server that rejects the JSON mode still gets an answer."""
+
+    def responder(request: httpx2.Request) -> httpx2.Response:
+        if b"response_format" in request.content:
+            return httpx2.Response(500, json={"error": {"message": "not supported"}})
+        return httpx2.Response(
+            200,
+            json=completion('Sure!\n```json\n{"name": "Sahil", "email": "s@example.com"}\n```'),
+        )
+
+    provider.responder = responder
+
+    result = await client.complete_structured(
+        messages=[ChatMessage(role="user", content="book me an interview")], schema=Booking
+    )
+
+    assert isinstance(result, Booking)
+    assert result.name == "Sahil"
+    # The retry did not ask for the JSON mode again.
+    assert "response_format" not in provider.last_body
+
+
+async def test_a_model_that_echoes_the_schema_is_answered_anyway(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    """The echoed schema is JSON too - but only the answer validates."""
+
+    def responder(request: httpx2.Request) -> httpx2.Response:
+        if b"response_format" in request.content:
+            return httpx2.Response(500, json={"error": {"message": "not supported"}})
+        return httpx2.Response(
+            200,
+            json=completion(
+                '{"type": "object", "properties": {"name": {"type": "string"}}}\n'
+                '{"name": "Sahil", "email": "s@example.com"}'
+            ),
+        )
+
+    provider.responder = responder
+
+    result = await client.complete_structured(
+        messages=[ChatMessage(role="user", content="book me an interview")], schema=Booking
+    )
+
+    assert result.name == "Sahil"
+
+
+async def test_a_misconfigured_provider_is_not_retried_in_plain_text(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    """A 401 is a bad key, not a missing JSON mode - retrying would only hide it."""
+    provider.responder = lambda request: httpx2.Response(
+        401, json={"error": {"message": "bad key"}}
+    )
+
+    with pytest.raises(UpstreamError):
+        await client.complete_structured(
+            messages=[ChatMessage(role="user", content="hi")], schema=Booking
+        )
+
+    assert len(provider.requests) == 1
 
 
 async def test_without_an_api_key_the_call_fails(provider: FakeProvider) -> None:

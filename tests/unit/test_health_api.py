@@ -36,9 +36,7 @@ async def test_health_is_always_ok(client: AsyncClient) -> None:
     assert response.json() == {"status": "ok"}
 
 
-async def test_ready_when_every_dependency_is_up(
-    client: AsyncClient, all_up: None
-) -> None:
+async def test_ready_when_every_dependency_is_up(client: AsyncClient, all_up: None) -> None:
     response = await client.get("/ready")
 
     assert response.status_code == 200

@@ -9,7 +9,7 @@ exponential backoff, and never retries a 4xx like 400.
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from functools import lru_cache
 from typing import Literal, TypeVar
@@ -39,6 +39,36 @@ Role = Literal["system", "user", "assistant"]
 # without one — a missing key is the call's problem, not startup's.
 _PLACEHOLDER_KEY = "not-configured"
 
+# A provider that does not implement the JSON mode rejects the parameter or
+# fails the request outright. Those are the statuses worth a second, plain-text
+# attempt — a 401 or a 404 is a misconfiguration, and retrying would only hide
+# it.
+_JSON_MODE_RETRY_STATUSES = frozenset({400, 422, 500})
+
+
+def _balanced_object(text: str, start: int) -> str | None:
+    """The JSON object that starts at `start`, or None if it never closes."""
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def _json_objects(text: str) -> Iterator[str]:
+    """Every JSON object in the text, in order."""
+    for start in range(len(text)):
+        if text[start] != "{":
+            continue
+        candidate = _balanced_object(text, start)
+        if candidate is not None:
+            yield candidate
+
 
 class ChatMessage(BaseModel):
     """One message in a conversation.
@@ -59,6 +89,22 @@ def _to_param(message: ChatMessage) -> ChatCompletionMessageParam:
     if message.role == "assistant":
         return ChatCompletionAssistantMessageParam(role="assistant", content=message.content)
     return ChatCompletionUserMessageParam(role="user", content=message.content)
+
+
+def _with_schema_hint(messages: Sequence[ChatMessage], hint: str) -> list[ChatMessage]:
+    """The schema hint belongs with the system prompt.
+
+    A system message *after* the user turn is not what a chat model expects:
+    asked that way, a small model answers by echoing the schema instead of
+    filling it in. So the hint is merged into the system prompt, and only
+    becomes a system message of its own when there is none.
+    """
+    payload = list(messages)
+    for index, message in enumerate(payload):
+        if message.role == "system":
+            payload[index] = ChatMessage(role="system", content=f"{message.content}\n\n{hint}")
+            return payload
+    return [ChatMessage(role="system", content=hint), *payload]
 
 
 class LLMClient:
@@ -116,24 +162,20 @@ class LLMClient:
             "Respond with a JSON object only, matching this schema exactly:\n"
             f"{json.dumps(schema.model_json_schema())}"
         )
-        content = await self._request(
-            [*messages, ChatMessage(role="system", content=hint)],
-            temperature=temperature,
-            max_tokens=None,
-            response_format=ResponseFormatJSONObject(type="json_object"),
-        )
+        payload = _with_schema_hint(messages, hint)
+        content = await self._structured_request(payload, schema, temperature=temperature)
         try:
-            payload = json.loads(content)
+            parsed = json.loads(content)
         except json.JSONDecodeError as exc:
             raise UpstreamError(
                 "LLM returned invalid JSON", details={"raw": content[:500]}
             ) from exc
-        if not isinstance(payload, dict):
+        if not isinstance(parsed, dict):
             raise UpstreamError(
                 "LLM returned JSON that is not an object", details={"raw": content[:500]}
             )
         try:
-            return schema.model_validate(payload)
+            return schema.model_validate(parsed)
         except ValidationError as exc:
             # The provider answered, but not in the shape we asked for.
             raise UpstreamError(
@@ -142,9 +184,57 @@ class LLMClient:
                     "errors": exc.errors(
                         include_url=False, include_context=False, include_input=False
                     )[:5],
-                    "raw": payload,
+                    "raw": parsed,
                 },
             ) from exc
+
+    async def _structured_request(
+        self, payload: Sequence[ChatMessage], schema: type[SchemaT], *, temperature: float
+    ) -> str:
+        """The JSON answer, asking again in plain text if the JSON mode fails.
+
+        A provider that does not implement the JSON mode either rejects the
+        parameter or answers with something that is not JSON. Both are worth
+        one plain-text retry, because the model can still produce the object.
+        """
+        try:
+            content = await self._request(
+                payload,
+                temperature=temperature,
+                max_tokens=None,
+                response_format=ResponseFormatJSONObject(type="json_object"),
+            )
+            json.loads(content)  # it only counts as a success if it is JSON
+            return content
+        except UpstreamError as exc:
+            if exc.details.get("status_code") not in _JSON_MODE_RETRY_STATUSES:
+                raise
+        except json.JSONDecodeError:
+            pass
+        logger.info("JSON mode unusable; retrying the request in plain text")
+        raw = await self._request(
+            payload, temperature=temperature, max_tokens=None, response_format=Omit()
+        )
+        return self._object_matching(raw, schema)
+
+    @staticmethod
+    def _object_matching(text: str, schema: type[SchemaT]) -> str:
+        """The first object in the text that fits the schema.
+
+        A model asked for JSON often wraps it in prose or a code fence, and it
+        sometimes answers with the schema itself - so every object in the
+        answer is tried until one validates.
+        """
+        for candidate in _json_objects(text):
+            try:
+                payload = json.loads(candidate)
+                schema.model_validate(payload)
+            except (json.JSONDecodeError, ValidationError):
+                continue
+            return candidate
+        raise UpstreamError(
+            "LLM returned no JSON that matches the schema", details={"raw": text[:500]}
+        )
 
     async def _request(
         self,

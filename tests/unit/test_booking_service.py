@@ -491,6 +491,49 @@ async def test_maybe_is_not_a_confirmation(
     assert repo.created == []
 
 
+async def test_a_model_that_reads_the_details_as_an_agreement_is_not_believed(
+    booking_service: BookingService, extractor: FakeExtractor, repo: FakeRepository
+) -> None:
+    """A small model flags the details turn as a confirmation - the user still has to say yes."""
+    extractor.extractions["everything"] = BookingExtraction(
+        is_booking_request=True,
+        confirmed_by_user=True,
+        fields=BookingFields(
+            name="Sahil",
+            email="sahil@example.com",
+            interview_date=TOMORROW,
+            interview_time=time(14, 0),
+        ),
+    )
+
+    turn = await booking_service.handle_turn(session_id=SESSION, message="everything", history=[])
+
+    assert turn.persisted is False
+    assert turn.awaiting_confirmation is True
+    assert repo.created == []
+
+
+async def test_the_model_may_confirm_a_later_turn(
+    booking_service: BookingService, extractor: FakeExtractor, repo: FakeRepository
+) -> None:
+    """Once the details are known, the model's confirmation flag is enough."""
+    script(
+        extractor,
+        "everything",
+        name="Sahil",
+        email="sahil@example.com",
+        interview_date=TOMORROW,
+        interview_time=time(14, 0),
+    )
+    await booking_service.handle_turn(session_id=SESSION, message="everything", history=[])
+    extractor.extractions["ok"] = BookingExtraction(is_booking_request=True, confirmed_by_user=True)
+
+    turn = await booking_service.handle_turn(session_id=SESSION, message="ok", history=[])
+
+    assert turn.persisted is True
+    assert len(repo.created) == 1
+
+
 async def test_a_new_name_overwrites_the_old_one(
     booking_service: BookingService, extractor: FakeExtractor
 ) -> None:

@@ -25,6 +25,22 @@ services:
     ports: ["6333:6333"]
     volumes: ["qdrant_data:/qdrant/storage"]
 
+  # Optional: a local model, so the project runs without a cloud key and
+  # nothing leaves the machine.
+  #
+  #   docker compose --profile local-llm up -d ollama
+  #   docker compose exec ollama ollama pull llama3.1:8b
+  #   # then in .env:  LLM_BASE_URL=http://ollama:11434/v1
+  #
+  # Published on 11435, not 11434, so it does not fight with an Ollama
+  # already running on the host.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    ports: ["11435:11434"]
+    volumes: ["ollama_models:/root/.ollama"]
+    restart: unless-stopped
+
   api:
     build: .
     env_file:
@@ -57,3 +73,4 @@ volumes:
   pg_data:
   qdrant_data:
   hf_cache:
+  ollama_models:

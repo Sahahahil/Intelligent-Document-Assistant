@@ -43,9 +43,7 @@ class BookingRepository:
 
     async def delete(self, booking_id: UUID) -> None:
         """Remove a booking. The row was the booking, so the slot is free again."""
-        await self._session.execute(
-            sa_delete(Booking).where(Booking.id == booking_id)
-        )
+        await self._session.execute(sa_delete(Booking).where(Booking.id == booking_id))
         await self._session.commit()
 
     async def list(

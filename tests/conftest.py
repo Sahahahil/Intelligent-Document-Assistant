@@ -69,6 +69,11 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(text("DELETE FROM documents"))
         await session.commit()
         yield session
+        # And again afterwards, so a test run leaves no rows in the database
+        # the app reads from.
+        await session.execute(text("DELETE FROM bookings"))
+        await session.execute(text("DELETE FROM documents"))
+        await session.commit()
     # Each test runs in its own event loop, so pooled connections from the
     # previous loop must not be reused.
     await engine.dispose()

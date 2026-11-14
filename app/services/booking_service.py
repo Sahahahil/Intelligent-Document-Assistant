@@ -218,8 +218,14 @@ class BookingService:
         if conflict is not None:
             return await self._slot_taken(session_id, merged, conflict)
 
-        # The booking still needs an explicit yes.
-        if not (extraction.confirmed_by_user or self._is_affirmation(message)):
+        # The booking still needs an explicit yes. The model's own
+        # `confirmed_by_user` flag only counts when the turn did not carry the
+        # details: a small model sometimes reads "here are my details" as an
+        # agreement, and that would write a row nobody confirmed.
+        confirmed = self._is_affirmation(message) or (
+            extraction.confirmed_by_user and merged == draft
+        )
+        if not confirmed:
             await self.save_draft(session_id, merged)
             return BookingTurn(
                 is_booking=True,
@@ -317,16 +323,13 @@ class BookingService:
             persisted=False,
         )
 
-    async def _cancel_booking(
-        self, session_id: str, draft: BookingFields | None
-    ) -> BookingTurn:
+    async def _cancel_booking(self, session_id: str, draft: BookingFields | None) -> BookingTurn:
         """Cancel the booking of this session, if it has one."""
         booking = await self._repo.find_for_session(session_id)
         await self.clear_draft(session_id)
         if booking is None:
             reply = (
-                "No problem - I have cleared that request. "
-                "Tell me when you would like to book."
+                "No problem - I have cleared that request. Tell me when you would like to book."
                 if draft is not None
                 else "There is no interview booking on file for this session to cancel."
             )
