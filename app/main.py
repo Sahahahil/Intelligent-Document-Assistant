@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from app.api.health import router as health_router
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
@@ -34,16 +35,8 @@ app = FastAPI(
 
 register_exception_handlers(app)
 app.include_router(api_router, prefix="/api/v1")
-
-
-@app.get("/health", tags=["meta"])
-async def health() -> dict[str, str]:
-    """Liveness probe: the process is up and serving.
-
-    Cheap and dependency-free on purpose — it says nothing about whether
-    Postgres, Redis and Qdrant are reachable.
-    """
-    return {"status": "ok"}
+# Unversioned: the probes are infrastructure, not part of the API surface.
+app.include_router(health_router)
 
 
 @app.middleware("http")

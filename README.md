@@ -84,8 +84,9 @@ They exist for different reasons and are not interchangeable:
 | Chat memory | Redis | Session-based history with TTL |
 | LLM | OpenAI-compatible client | Swap Gemini / Groq / local vLLM by changing `.env`, not code |
 | Tests | pytest + httpx | Fast unit tests with fakes, integration tests against the real stack |
+| Containerization | Docker Compose | Postgres, Redis, Qdrant and the API in one command; migrations run on boot |
 
-**Why Qdrant and not Pinecone?** Pinecone is a hosted product — it needs an account and network access, and it makes the project impossible to run offline. Qdrant runs embedded on disk (no server, no container) with the same client API it exposes against a server, including payload filters, so the code is portable to Pinecone later if that is ever required.
+**Why Qdrant and not Pinecone?** Pinecone is a hosted product — it needs an account and network access, and it makes the project impossible to run offline. Qdrant runs two ways behind the same client API and the same payload filters: as a server in Docker Compose (the default), or embedded on disk (the local dev default — no server, no container). The code is portable to Pinecone later if that is ever required.
 
 ## API 1 — Document ingestion
 
@@ -211,7 +212,94 @@ The dependency direction is one-way: `api → services → repositories/integrat
 
 ## Running the project
 
-### What you need
+Two ways to run it.
+
+**Docker Compose** is the default: one command brings up PostgreSQL, Redis,
+Qdrant and the API, with the schema migrated on the way up. **Local** is for
+when you already have PostgreSQL and Redis installed — Qdrant then runs
+embedded on disk, and there is no container anywhere.
+
+Both options serve the same API on <http://localhost:8000>.
+
+### Option A — Docker Compose
+
+#### What you need
+
+| Requirement | Why | Notes |
+|-------------|-----|-------|
+| **Docker 24+** with the Compose plugin | runs the four services | `docker compose version` |
+| **An OpenAI-compatible LLM key** | answering questions, booking extraction | only `/chat` needs it — ingestion and the probes do not |
+| **~3 GB disk** | the image is mostly `torch` | the embedding model itself is only ~90 MB, downloaded on first boot into a named volume |
+
+#### 1. Configure it
+
+```bash
+cp .env.example .env
+```
+
+`.env` is where every setting lives (secrets never go in the code). The only
+thing you normally have to change is the LLM:
+
+```bash
+LLM_API_KEY=sk-...              # your provider key
+LLM_MODEL=gpt-4o-mini           # any model your provider exposes
+LLM_BASE_URL=                   # leave empty for OpenAI; set it for Groq/Gemini/vLLM
+```
+
+Provider examples:
+
+| Provider | `LLM_API_KEY` | `LLM_BASE_URL` | `LLM_MODEL` |
+|----------|---------------|----------------|-------------|
+| OpenAI | `sk-...` | *(empty)* | `gpt-4o-mini` |
+| Groq | `gsk_...` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| Gemini (OpenAI-compat) | `AIza...` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` |
+| Local vLLM | `anything` (non-empty) | `http://localhost:8001/v1` | whatever you served |
+
+Everything else in `.env` has a working default. The compose file overrides
+the three service URLs (`DATABASE_URL`, `REDIS_URL`, `QDRANT_URL`) so they
+point at the containers — you do not need to change them.
+
+#### 2. Start everything
+
+```bash
+docker compose up --build
+```
+
+The first build downloads the CPU build of `torch` and takes a few minutes.
+After that:
+
+| Service | URL |
+|---------|-----|
+| API | <http://localhost:8000> |
+| Interactive docs | <http://localhost:8000/docs> |
+| OpenAPI schema | <http://localhost:8000/openapi.json> |
+| Qdrant dashboard | <http://localhost:6333/dashboard> |
+
+The API waits for PostgreSQL and Redis to report healthy, applies the Alembic
+migrations, and only then starts serving.
+
+#### 3. Check it is alive
+
+```bash
+curl http://localhost:8000/health    # {"status":"ok"} — the process is up
+curl http://localhost:8000/ready     # 200 + a per-dependency report, or 503
+```
+
+`/health` is **liveness**: it touches nothing, so a database blip never
+restarts a healthy container. `/ready` is **readiness**: it pings PostgreSQL,
+Redis and Qdrant and answers `503` if any of them is unreachable. That is the
+one to point a load balancer at.
+
+```json
+{
+  "status": "ready",
+  "checks": { "postgres": "ok", "redis": "ok", "qdrant": "ok" }
+}
+```
+
+### Option B — Local, without Docker
+
+#### What you need
 
 | Requirement | Why | Notes |
 |-------------|-----|-------|
@@ -232,7 +320,7 @@ sudo pacman -S postgresql redis            # Arch / CachyOS
 # brew install postgresql@16 redis          # macOS
 ```
 
-### 1. Get the code and install the dependencies
+#### 1. Get the code and install the dependencies
 
 ```bash
 git clone git@github.com:Sahahahil/Intelligent-Document-Assistant.git
@@ -243,36 +331,16 @@ uv sync                 # creates .venv with Python 3.11 and installs everything
 `uv sync` installs the app and the dev tools (pytest, ruff, mypy). It also pulls
 `torch` — expect a large first download.
 
-### 2. Configure it
+#### 2. Configure it
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` is where every setting lives (secrets never go in the code). The defaults
-already match the local setup, so the only thing you normally have to change is
-the LLM:
+Same `.env` as the Docker path. The difference: `QDRANT_URL` is left empty, so
+Qdrant runs embedded on disk at `QDRANT_PATH` instead of against a server.
 
-```bash
-LLM_API_KEY=sk-...              # your provider key
-LLM_MODEL=gpt-4o-mini           # any model your provider exposes
-LLM_BASE_URL=                   # leave empty for OpenAI; set it for Groq/Gemini/vLLM
-```
-
-Provider examples:
-
-| Provider | `LLM_API_KEY` | `LLM_BASE_URL` | `LLM_MODEL` |
-|----------|---------------|----------------|-------------|
-| OpenAI | `sk-...` | *(empty)* | `gpt-4o-mini` |
-| Groq | `gsk_...` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
-| Gemini (OpenAI-compat) | `AIza...` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` |
-| Local vLLM | `anything` (non-empty) | `http://localhost:8001/v1` | whatever you served |
-
-Everything else in `.env` — `DATABASE_URL`, `REDIS_URL`, `QDRANT_PATH`,
-`CHUNK_SIZE`, `TOP_K` — has a working default. `QDRANT_URL` empty means
-"embedded on disk", which is what you want locally.
-
-### 3. Start PostgreSQL and Redis
+#### 3. Start PostgreSQL and Redis
 
 ```bash
 ./scripts/setup_local.sh
@@ -285,7 +353,7 @@ role and database, starts both services, and prints the URLs it used.
 You do **not** need to run a system-wide PostgreSQL or Redis; the script starts
 its own on the default ports (5432 / 6379).
 
-### 4. Create the schema
+#### 4. Create the schema
 
 ```bash
 uv run alembic upgrade head
@@ -294,7 +362,7 @@ uv run alembic upgrade head
 This creates the `documents` and `bookings` tables and the indexes. It is safe
 to re-run — Alembic tracks what has been applied.
 
-### 5. Start the API
+#### 5. Start the API
 
 ```bash
 uv run uvicorn app.main:app --reload
@@ -302,13 +370,16 @@ uv run uvicorn app.main:app --reload
 
 - API: <http://localhost:8000>
 - Interactive docs: <http://localhost:8000/docs>
-- OpenAPI schema: <http://localhost:8000/openapi.json`
+- OpenAPI schema: <http://localhost:8000/openapi.json>
 
 The first request that needs embeddings downloads the model
 (`sentence-transformers/all-MiniLM-L6-v2`, ~90 MB) into the HuggingFace cache.
 After that it is local.
 
-### 6. Try it
+> The Docker and local paths bind the same ports (5432, 6379, 8000). Stop one
+> before starting the other — `docker compose down` first.
+
+### Try it
 
 **Ingest a document** — `.pdf` or `.txt`, up to 20 MB:
 
@@ -377,7 +448,9 @@ curl http://localhost:8000/api/v1/documents/<document_id>
 curl -X DELETE http://localhost:8000/api/v1/documents/<document_id>
 ```
 
-### 7. Run the tests
+### Run the tests
+
+The suite runs on your machine — it needs no containers at all.
 
 ```bash
 uv run pytest                    # unit tests — no network, no database
@@ -395,16 +468,23 @@ and falls back to CPU otherwise.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `502 "LLM_API_KEY is not configured"` | no key in `.env` | set `LLM_API_KEY` and `LLM_MODEL`; ingestion still works without them |
-| `connection refused` on `:5432` / `:6379` | services not running | `./scripts/setup_local.sh` |
-| `alembic.util.exc.CommandError` / missing tables | migrations not applied | `uv run alembic upgrade head` |
+| `503` from `/ready` | one of Postgres / Redis / Qdrant is down | the body names the failing one: `{"status": "not_ready", "checks": {...}}` |
+| `connection refused` on `:5432` / `:6379` | services not running | `docker compose up -d postgres redis`, or `./scripts/setup_local.sh` |
+| `alembic.util.exc.CommandError` / missing tables | migrations not applied | `uv run alembic upgrade head` (the container does this on boot) |
 | `409 Conflict` on upload | the same file was already ingested | duplicate detection is by content hash — upload different content, or `DELETE` the old document |
-| `500` "Storage folder ./qdrant_data is already accessed by another instance of Qdrant client" | a second app instance is running | embedded Qdrant takes a lock on its directory — stop the other process, or point `QDRANT_URL` at a Qdrant server |
-| `torch` download stalls | slow network | the model is fetched once and cached in `~/.cache/huggingface` |
+| `500` "Storage folder ./qdrant_data is already accessed by another instance of Qdrant client" | a second app instance is running | embedded Qdrant takes a lock on its directory — stop the other process, or point `QDRANT_URL` at a Qdrant server (the Docker path does) |
+| `torch` download stalls | slow network | the model is fetched once and cached — in `~/.cache/huggingface` locally, in the `hf_cache` volume in Docker |
+| The first `docker compose up --build` is slow | the image downloads CPU `torch` | ~3 GB once; later builds reuse the layer |
 | Nothing is retrieved | the document was ingested but the question is out of scope | check `GET /api/v1/documents/<id>` — `status` must be `completed` |
 
 ### Stopping and resetting
 
 ```bash
+# --- Docker ---
+docker compose down          # stop the services, keep the data
+docker compose down -v       # stop and wipe the data volumes too
+
+# --- Local ---
 # stop the app: Ctrl-C in the terminal running uvicorn
 
 # stop the services
@@ -429,6 +509,7 @@ A few choices worth defending in a review:
 - **Qdrant payloads carry the chunk text.** Retrieval never re-embeds; the trade-off is payload size, which is acceptable at this scale.
 - **The LLM retry policy is the SDK's.** It retries 429 and 5xx twice with backoff and never retries a 4xx; a second retry loop on top would only double the attempts and hide the behaviour.
 - **One uniform error envelope** for every failure — `{"error": {"code", "message", "details", "request_id"}}` — so a client never has to parse two error formats.
+- **Liveness and readiness are separate.** `/health` touches nothing, so a database blip never restarts a healthy container; `/ready` pings all three stores and answers `503` with the failing one named. A readiness failure reports the exception *type* only — a database error message can contain the connection string, and the probe is unauthenticated.
 
 ## Known limitations
 
@@ -439,6 +520,7 @@ Stated up front rather than discovered later:
 - No reranking — retrieval is single-stage vector search. A cross-encoder would help only if evaluation shows recall is the bottleneck.
 - Scanned / image-only PDFs are not supported (no OCR).
 - The embedding model is loaded per process, so scaling out means scaling memory.
+- In the local (non-Docker) path Qdrant runs embedded and takes a filesystem lock on its directory, so only one worker can serve at a time. The Docker path uses a Qdrant server and has no such limit.
 - The booking intent check costs one extra LLM call per chat turn.
 - Postgres and Qdrant are not updated in a single transaction; the compensating-delete approach in the ingestion service is the mitigation, not a guarantee.
 
