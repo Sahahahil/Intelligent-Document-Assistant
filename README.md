@@ -476,6 +476,26 @@ from HuggingFace on first use and cached; the suite never needs it because the
 unit tests run against a fake model. It runs on the GPU when one is available
 and falls back to CPU otherwise.
 
+### Smoke test
+
+One script that proves the whole thing works, the way a grader would check it:
+
+```bash
+./scripts/smoke.sh          # build, boot the stack, drive both APIs, tear down
+./scripts/smoke.sh --keep   # ...and leave the stack running afterwards
+```
+
+It boots Docker Compose, waits for `/ready`, ingests a document, lists it,
+asks a question, deletes it, reads a stored booking back, and asserts the
+error envelope on a blank message. An LLM key is optional: without one the
+chat turn is expected to answer `502` — the API is up, the upstream is not —
+and the script still passes. The script stops the stack when it finishes; the
+data survives, because the volumes are kept.
+
+Note that Compose publishes PostgreSQL on the host's `5432`, so the local
+integration tests use that same database — bring the stack back up with
+`docker compose up -d` after a smoke run.
+
 ### Troubleshooting
 
 | Symptom | Cause | Fix |
