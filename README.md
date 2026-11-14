@@ -181,6 +181,10 @@ User: yes
 Bot:  Your interview request for 2026-11-20 at 14:00 has been recorded.
 ```
 
+```
+GET  /api/v1/bookings             list, paginated, filterable by email/date/status
+```
+
 - **Intent detection and extraction are one LLM call** returning a Pydantic-validated object (`is_booking_request`, `name`, `email`, `date`, `time`, `cancels_booking`). The model is instructed never to invent a value it was not given; a missing field stays missing.
 - **Partial details accumulate in Redis** under `booking_draft:{session_id}`, so a bare "November 20" is understood in context and a corrected value ("actually, call me Sahil") overwrites the old one.
 - **Nothing is written to PostgreSQL until the user explicitly confirms.** "Hmm" is not a confirmation. This is the single rule that makes the bookings table trustworthy.
@@ -448,6 +452,13 @@ writes the row to PostgreSQL only after you confirm.
 curl "http://localhost:8000/api/v1/documents?limit=10&status=completed"
 curl http://localhost:8000/api/v1/documents/<document_id>
 curl -X DELETE http://localhost:8000/api/v1/documents/<document_id>
+```
+
+**Read the bookings back:**
+
+```bash
+curl "http://localhost:8000/api/v1/bookings?limit=10"
+curl "http://localhost:8000/api/v1/bookings?email=sahil@example.com&status=confirmed"
 ```
 
 ### Run the tests

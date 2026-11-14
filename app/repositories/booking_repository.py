@@ -2,7 +2,7 @@
 
 from datetime import date, time
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking, BookingStatus
@@ -50,3 +50,41 @@ class BookingRepository:
         await self._session.commit()
         await self._session.refresh(booking)
         return booking
+
+    async def list(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        email: str | None = None,
+        interview_date: date | None = None,
+        status: BookingStatus | None = None,
+    ) -> tuple[list[Booking], int]:
+        """A page of bookings, newest first.
+
+        The email is matched exactly - it is the address the user gave.
+        """
+        rows_stmt = select(Booking)
+        count_stmt = select(func.count()).select_from(Booking)
+        filters = []
+        if email is not None:
+            filters.append(Booking.email == email)
+        if interview_date is not None:
+            filters.append(Booking.interview_date == interview_date)
+        if status is not None:
+            filters.append(Booking.status == status)
+        if filters:
+            rows_stmt = rows_stmt.where(*filters)
+            count_stmt = count_stmt.where(*filters)
+
+        total = (await self._session.execute(count_stmt)).scalar_one()
+        rows = (
+            (
+                await self._session.execute(
+                    rows_stmt.order_by(Booking.created_at.desc()).limit(limit).offset(offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(rows), total

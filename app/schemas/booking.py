@@ -1,10 +1,12 @@
 """Booking schemas: what the LLM extracts, and what the API returns."""
 
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+from app.models.booking import BookingStatus
 
 
 class BookingFields(BaseModel):
@@ -40,3 +42,26 @@ class BookingModel(BaseModel):
     status: Literal["pending", "confirmed", "cancelled"] = "pending"
     missing_fields: list[str] = Field(default_factory=list)
     awaiting_confirmation: bool = False
+
+
+class BookingSummary(BaseModel):
+    """A stored booking in a list."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    email: str
+    interview_date: date
+    interview_time: time
+    status: BookingStatus
+    created_at: datetime
+
+
+class BookingListResponse(BaseModel):
+    """A page of bookings."""
+
+    items: list[BookingSummary]
+    total: int
+    limit: int
+    offset: int

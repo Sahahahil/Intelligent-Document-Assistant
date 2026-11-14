@@ -197,3 +197,47 @@ async def test_the_confirmed_booking_of_a_session_is_found(db_session: AsyncSess
     assert found is not None
     assert found.id == booking.id
     assert await repo.find_confirmed("other") is None
+
+
+async def test_bookings_are_listed_and_filtered(db_session: AsyncSession) -> None:
+    repo = BookingRepository(db_session)
+    await repo.create(
+        Booking(
+            session_id="s1",
+            name="Sahil",
+            email="sahil@example.com",
+            interview_date=date(2026, 11, 20),
+            interview_time=time(14, 0),
+            status=BookingStatus.CONFIRMED,
+        )
+    )
+    await repo.create(
+        Booking(
+            session_id="s2",
+            name="Someone Else",
+            email="someone@example.com",
+            interview_date=date(2026, 11, 21),
+            interview_time=time(10, 0),
+            status=BookingStatus.CANCELLED,
+        )
+    )
+
+    rows, total = await repo.list()
+    assert total == 2
+    assert len(rows) == 2
+
+    rows, total = await repo.list(email="sahil@example.com")
+    assert total == 1
+    assert rows[0].email == "sahil@example.com"
+
+    rows, total = await repo.list(interview_date=date(2026, 11, 21))
+    assert total == 1
+    assert rows[0].email == "someone@example.com"
+
+    rows, total = await repo.list(status=BookingStatus.CANCELLED)
+    assert total == 1
+    assert rows[0].status == BookingStatus.CANCELLED
+
+    rows, total = await repo.list(limit=1)
+    assert total == 2
+    assert len(rows) == 1
