@@ -72,10 +72,28 @@ esac
 
 # --- API 1: document ingestion ---------------------------------------------
 step "API 1 - ingesting a document"
-printf 'The quarterly review is scheduled for the fifteenth of the month.\n' > "$WORK/smoke.txt"
+# A one-page PDF, so the upload exercises the PyMuPDF path and not only the
+# plain-text one. base64 keeps the script free of a Python dependency.
+PDF_B64='JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguNgoKMSAwIG9iago8PC9UeXBl
+L0NhdGFsb2cvUGFnZXMgMiAwIFIvSW5mbzw8L1Byb2R1Y2VyKE11UERGIDEuMjguNik+Pj4+CmVu
+ZG9iagoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1s0IDAgUl0+PgplbmRvYmoK
+CjMgMCBvYmoKPDwvRm9udDw8L2hlbHYgNSAwIFI+Pj4+CmVuZG9iagoKNCAwIG9iago8PC9UeXBl
+L1BhZ2UvTWVkaWFCb3hbMCAwIDU5NSA4NDJdL1JvdGF0ZSAwL1Jlc291cmNlcyAzIDAgUi9QYXJl
+bnQgMiAwIFIvQ29udGVudHNbNiAwIFJdPj4KZW5kb2JqCgo1IDAgb2JqCjw8L1R5cGUvRm9udC9T
+dWJ0eXBlL1R5cGUxL0Jhc2VGb250L0hlbHZldGljYS9FbmNvZGluZy9XaW5BbnNpRW5jb2Rpbmc+
+PgplbmRvYmoKCjYgMCBvYmoKPDwvTGVuZ3RoIDEyOS9GaWx0ZXIvRmxhdGVEZWNvZGU+PgpzdHJl
+YW0KeNpNTDsKQjEQ7PcUewPfbpIZA2Ih2NgJ6cTqmWChhY3nd4MWMrCf+clLDk1Ml4ApXZld21M2
+9/54q5m2oZddydii+EJjgdGZUehYWYPzuIEak76gMgWXkGYCOfzr3KEAgx7arwszg9kU6JMNbgB/
+jlv8X6Xvr+0kxyZn+QB2Vyc9CmVuZHN0cmVhbQplbmRvYmoKCnhyZWYKMCA3CjAwMDAwMDAwMDAg
+NjU1MzUgZiAKMDAwMDAwMDA0MiAwMDAwMCBuIAowMDAwMDAwMTIwIDAwMDAwIG4gCjAwMDAwMDAx
+NzIgMDAwMDAgbiAKMDAwMDAwMDIxMyAwMDAwMCBuIAowMDAwMDAwMzIwIDAwMDAwIG4gCjAwMDAw
+MDA0MDkgMDAwMDAgbiAKCnRyYWlsZXIKPDwvU2l6ZSA3L1Jvb3QgMSAwIFIvSURbPEMzQTk2Q0My
+OTdDMkJBMDhDM0I0NDBDMjlFQzJBMzU3PjxCNEEwODQwMzYyRjA4NTU2MDI5NTgwOEU1RjRCRDNF
+ND5dPj4Kc3RhcnR4cmVmCjYwNwolJUVPRgo='
+printf '%s' "$PDF_B64" | base64 -d > "$WORK/smoke.pdf"
 INGEST_CODE="$(curl -sS --max-time 300 -o "$WORK/body" -w '%{http_code}' \
     -X POST "$API/api/v1/documents/ingest" \
-    -F "file=@$WORK/smoke.txt;type=text/plain" \
+    -F "file=@$WORK/smoke.pdf;type=application/pdf" \
     -F "chunking_strategy=recursive")"
 INGEST="$(cat "$WORK/body")"
 printf '%s\n' "$INGEST"
@@ -119,14 +137,19 @@ printf 'deleted %s\n' "$DOC_ID"
 
 # --- the bookings that were stored -----------------------------------------
 step "API 2 - a stored booking is read back"
+# 23:45 is a slot nobody books, and the slot index covers confirmed bookings
+# only - so the seed can never collide with a real booking.
 "${COMPOSE[@]}" exec -T postgres psql -U document_db -d document_db -q -c \
-    "INSERT INTO bookings (session_id, name, email, interview_date, interview_time, status)
-     VALUES ('smoke', 'Smoke Test', 'smoke@example.com', CURRENT_DATE + 1, '14:00', 'confirmed')
+    "DELETE FROM bookings WHERE email = 'smoke@example.com';
+     INSERT INTO bookings (session_id, name, email, interview_date, interview_time, status)
+     VALUES ('smoke', 'Smoke Test', 'smoke@example.com', CURRENT_DATE + 1, '23:45', 'confirmed')
      ON CONFLICT DO NOTHING;"
 BOOKINGS="$(curl -fsS "$API/api/v1/bookings?email=smoke@example.com")"
 case "$BOOKINGS" in
     *'smoke@example.com'*) printf '%s\n' "$BOOKINGS" ;;
     *) fail "the booking is not listed: $BOOKINGS" ;;
 esac
+"${COMPOSE[@]}" exec -T postgres psql -U document_db -d document_db -q -c \
+    "DELETE FROM bookings WHERE email = 'smoke@example.com';"
 
 printf '\nSMOKE TEST PASSED\n'
