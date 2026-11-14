@@ -12,8 +12,6 @@ from app.integrations.qdrant import VectorStore, get_vector_store
 from app.models.document import ChunkingStrategy, DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.schemas.document import (
-    DocumentChunkPreview,
-    DocumentChunksResponse,
     DocumentDetail,
     DocumentIngestResponse,
     DocumentListResponse,
@@ -33,9 +31,16 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def ingest_document(
     file: Annotated[UploadFile, File(description="PDF or TXT document")],
     service: Annotated[IngestionService, Depends(get_ingestion_service)],
-    chunking_strategy: Annotated[ChunkingStrategy, Form()] = ChunkingStrategy.RECURSIVE,
-    chunk_size: Annotated[int | None, Form()] = None,
-    chunk_overlap: Annotated[int | None, Form()] = None,
+    chunking_strategy: Annotated[
+        ChunkingStrategy, Form(description="How the text is split into chunks")
+    ] = ChunkingStrategy.RECURSIVE,
+    chunk_size: Annotated[
+        int | None, Form(description="Words per chunk. 0 or empty uses CHUNK_SIZE")
+    ] = None,
+    chunk_overlap: Annotated[
+        int | None,
+        Form(description="Words shared by neighbouring chunks. 0 or empty uses CHUNK_OVERLAP"),
+    ] = None,
 ) -> DocumentIngestResponse:
     """Run an uploaded document through the ingestion pipeline."""
     settings = get_settings()
@@ -92,34 +97,6 @@ async def get_document(
     if document is None:
         raise NotFoundError(f"Document {document_id} not found")
     return DocumentDetail.model_validate(document)
-
-
-@router.get(
-    "/{document_id}/chunks",
-    response_model=DocumentChunksResponse,
-    summary="Preview the stored chunks",
-)
-async def get_document_chunks(
-    document_id: UUID,
-    document_repo: Annotated[DocumentRepository, Depends(get_document_repository)],
-    vector_store: Annotated[VectorStore, Depends(get_vector_store)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
-) -> DocumentChunksResponse:
-    """The first chunks of a document, as they were indexed."""
-    document = await document_repo.get(document_id)
-    if document is None:
-        raise NotFoundError(f"Document {document_id} not found")
-    chunks = await vector_store.list_chunks(document_id, limit=limit)
-    return DocumentChunksResponse(
-        document_id=document_id,
-        total_chunks=document.total_chunks,
-        items=[
-            DocumentChunkPreview(
-                chunk_index=chunk.chunk_index, content=chunk.content, strategy=chunk.strategy
-            )
-            for chunk in chunks
-        ],
-    )
 
 
 @router.delete(

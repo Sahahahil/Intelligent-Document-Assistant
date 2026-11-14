@@ -3,34 +3,19 @@
 Run with:  uv run pytest -m integration
 """
 
-from collections.abc import AsyncIterator
 from datetime import date, time
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import AsyncSessionLocal, engine
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking
 from app.models.document import ChunkingStrategy, Document, DocumentStatus
 from app.repositories.booking_repository import BookingRepository
 from app.repositories.document_repository import DocumentRepository
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-    async with AsyncSessionLocal() as db_session:
-        await db_session.execute(text("DELETE FROM documents"))
-        await db_session.execute(text("DELETE FROM bookings"))
-        await db_session.commit()
-        yield db_session
-    # Each test runs in its own event loop, so pooled connections from the
-    # previous loop must not be reused.
-    await engine.dispose()
 
 
 def make_document(**overrides: object) -> Document:
@@ -51,8 +36,8 @@ def make_document(**overrides: object) -> Document:
     return Document(**values)
 
 
-async def test_document_crud(session: AsyncSession) -> None:
-    repo = DocumentRepository(session)
+async def test_document_crud(db_session: AsyncSession) -> None:
+    repo = DocumentRepository(db_session)
     document = await repo.create(make_document())
 
     assert (await repo.get(document.id)) is not None
@@ -71,8 +56,8 @@ async def test_document_crud(session: AsyncSession) -> None:
     assert await repo.get(document.id) is None
 
 
-async def test_document_list_paginates_and_filters(session: AsyncSession) -> None:
-    repo = DocumentRepository(session)
+async def test_document_list_paginates_and_filters(db_session: AsyncSession) -> None:
+    repo = DocumentRepository(db_session)
     for _ in range(3):
         await repo.create(make_document())
     await repo.create(make_document(status=DocumentStatus.FAILED))
@@ -86,18 +71,18 @@ async def test_document_list_paginates_and_filters(session: AsyncSession) -> Non
     assert failed[0].status == DocumentStatus.FAILED
 
 
-async def test_duplicate_file_hash_is_rejected(session: AsyncSession) -> None:
-    repo = DocumentRepository(session)
+async def test_duplicate_file_hash_is_rejected(db_session: AsyncSession) -> None:
+    repo = DocumentRepository(db_session)
     file_hash = uuid4().hex
     await repo.create(make_document(file_hash=file_hash))
 
     with pytest.raises(IntegrityError):
         await repo.create(make_document(file_hash=file_hash))
-    await session.rollback()
+    await db_session.rollback()
 
 
-async def test_booking_slot_conflict(session: AsyncSession) -> None:
-    repo = BookingRepository(session)
+async def test_booking_slot_conflict(db_session: AsyncSession) -> None:
+    repo = BookingRepository(db_session)
     email = f"{uuid4().hex}@example.com"
     booking = Booking(
         session_id="s1",
@@ -105,75 +90,112 @@ async def test_booking_slot_conflict(session: AsyncSession) -> None:
         email=email,
         interview_date=date(2026, 11, 20),
         interview_time=time(14, 0),
-        status=BookingStatus.CONFIRMED,
-        raw_payload={},
     )
     await repo.create(booking)
 
-    found = await repo.find_conflict(email, date(2026, 11, 20), time(14, 0))
+    found = await repo.find_conflict(date(2026, 11, 20), time(14, 0))
     assert found is not None
     assert found.id == booking.id
 
-    assert await repo.find_conflict(email, date(2026, 11, 21), time(14, 0)) is None
-
-    rows, total = await repo.list(session_id="s1")
-    assert total == 1
-    assert rows[0].email == email
+    assert await repo.find_conflict(date(2026, 11, 21), time(14, 0)) is None
 
 
-async def test_only_confirmed_bookings_occupy_a_slot(session: AsyncSession) -> None:
-    """A pending or cancelled booking must not block the same slot."""
-    repo = BookingRepository(session)
-    email = f"{uuid4().hex}@example.com"
-    when, at = date(2026, 11, 20), time(14, 0)
-
-    await repo.create(
-        Booking(
-            session_id="s1",
-            name="Sahil",
-            email=email,
-            interview_date=when,
-            interview_time=at,
-            status=BookingStatus.PENDING,
-            raw_payload={},
-        )
-    )
-    assert await repo.find_conflict(email, when, at) is None
-
-    # The database agrees: a pending row does not block a confirmed one.
-    await repo.create(
-        Booking(
-            session_id="s1",
-            name="Sahil",
-            email=email,
-            interview_date=when,
-            interview_time=at,
-            status=BookingStatus.CONFIRMED,
-            raw_payload={},
-        )
-    )
-    assert await repo.find_conflict(email, when, at) is not None
-
-
-async def test_two_confirmed_bookings_in_the_same_slot_are_rejected(
-    session: AsyncSession,
+async def test_two_bookings_in_the_same_slot_are_rejected(
+    db_session: AsyncSession,
 ) -> None:
-    repo = BookingRepository(session)
-    email = f"{uuid4().hex}@example.com"
+    """The slot is taken by whoever booked it - not by one person only."""
+    repo = BookingRepository(db_session)
     when, at = date(2026, 11, 20), time(14, 0)
 
-    def make() -> Booking:
+    def make(email: str) -> Booking:
         return Booking(
             session_id="s1",
             name="Sahil",
             email=email,
             interview_date=when,
             interview_time=at,
-            status=BookingStatus.CONFIRMED,
-            raw_payload={},
         )
 
-    await repo.create(make())
+    await repo.create(make(f"{uuid4().hex}@example.com"))
     with pytest.raises(IntegrityError):
-        await repo.create(make())
-    await session.rollback()
+        await repo.create(make(f"{uuid4().hex}@example.com"))
+    await db_session.rollback()
+
+
+async def test_a_booking_can_be_deleted_and_the_slot_freed(
+    db_session: AsyncSession,
+) -> None:
+    """The row is the booking - removing it frees the slot."""
+    repo = BookingRepository(db_session)
+    when, at = date(2026, 11, 20), time(14, 0)
+    booking = await repo.create(
+        Booking(
+            session_id="s1",
+            name="Sahil",
+            email=f"{uuid4().hex}@example.com",
+            interview_date=when,
+            interview_time=at,
+        )
+    )
+
+    await repo.delete(booking.id)
+
+    assert await repo.find_conflict(when, at) is None
+    assert await repo.find_for_session("s1") is None
+
+
+async def test_the_booking_of_a_session_is_found(db_session: AsyncSession) -> None:
+    repo = BookingRepository(db_session)
+    booking = await repo.create(
+        Booking(
+            session_id="s1",
+            name="Sahil",
+            email=f"{uuid4().hex}@example.com",
+            interview_date=date(2026, 11, 20),
+            interview_time=time(14, 0),
+        )
+    )
+
+    found = await repo.find_for_session("s1")
+
+    assert found is not None
+    assert found.id == booking.id
+    assert await repo.find_for_session("other") is None
+
+
+async def test_bookings_are_listed_and_filtered(db_session: AsyncSession) -> None:
+    repo = BookingRepository(db_session)
+    await repo.create(
+        Booking(
+            session_id="s1",
+            name="Sahil",
+            email="sahil@example.com",
+            interview_date=date(2026, 11, 20),
+            interview_time=time(14, 0),
+        )
+    )
+    await repo.create(
+        Booking(
+            session_id="s2",
+            name="Someone Else",
+            email="someone@example.com",
+            interview_date=date(2026, 11, 21),
+            interview_time=time(10, 0),
+        )
+    )
+
+    rows, total = await repo.list()
+    assert total == 2
+    assert len(rows) == 2
+
+    rows, total = await repo.list(email="sahil@example.com")
+    assert total == 1
+    assert rows[0].email == "sahil@example.com"
+
+    rows, total = await repo.list(interview_date=date(2026, 11, 21))
+    assert total == 1
+    assert rows[0].email == "someone@example.com"
+
+    rows, total = await repo.list(limit=1)
+    assert total == 2
+    assert len(rows) == 1

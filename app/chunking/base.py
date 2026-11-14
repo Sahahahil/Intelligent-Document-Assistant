@@ -1,7 +1,7 @@
 """The chunk contract both chunking strategies implement."""
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from app.models.document import ChunkingStrategy
@@ -15,7 +15,9 @@ class DocumentChunk:
     chunk_index: int
     document_id: UUID
     token_count: int
-    metadata: dict[str, Any]
+    strategy: ChunkingStrategy
+    start_char: int
+    end_char: int
 
 
 class Chunker(Protocol):

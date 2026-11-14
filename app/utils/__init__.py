@@ -1,7 +1,7 @@
 """File text extraction. Pick an extractor with `get_extractor`."""
 
 from app.core.exceptions import UnsupportedFileTypeError
-from app.utils.base import ExtractedText, TextExtractor
+from app.utils.base import TextExtractor
 from app.utils.pdf_extractor import PdfExtractor
 from app.utils.text_extractor import PlainTextExtractor
 
@@ -10,12 +10,10 @@ _pdf = PdfExtractor()
 
 _EXTRACTORS: dict[str, TextExtractor] = {
     "txt": _text,
-    "md": _text,
-    "text": _text,
     "pdf": _pdf,
 }
 
-__all__ = ["ExtractedText", "PdfExtractor", "PlainTextExtractor", "TextExtractor", "get_extractor"]
+__all__ = ["PdfExtractor", "PlainTextExtractor", "TextExtractor", "get_extractor"]
 
 
 def get_extractor(extension: str) -> TextExtractor:

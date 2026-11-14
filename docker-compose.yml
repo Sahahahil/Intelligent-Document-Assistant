@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: document_db
+      POSTGRES_PASSWORD: document_db
+      POSTGRES_DB: document_db
+    ports: ["5432:5432"]
+    volumes: ["pg_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U document_db"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes: ["qdrant_data:/qdrant/storage"]
+
+  # Optional: a local model, so the project runs without a cloud key and
+  # nothing leaves the machine.
+  #
+  #   docker compose --profile local-llm up -d ollama
+  #   docker compose exec ollama ollama pull llama3.1:8b
+  #   # then in .env:  LLM_BASE_URL=http://ollama:11434/v1
+  #
+  # Published on 11435, not 11434, so it does not fight with an Ollama
+  # already running on the host.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    ports: ["11435:11434"]
+    volumes: ["ollama_models:/root/.ollama"]
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file:
+      # Optional: the app boots without a .env — only /chat needs an LLM key.
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://document_db:document_db@postgres:5432/document_db
+      REDIS_URL: redis://redis:6379/0
+      # Server mode: no embedded-directory lock, so more than one worker works.
+      QDRANT_URL: http://qdrant:6333
+    ports: ["8000:8000"]
+    volumes:
+      # The ~90 MB embedding model survives restarts instead of being
+      # downloaded on every boot.
+      - hf_cache:/srv/.hf
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      qdrant: { condition: service_started }
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      retries: 5
+      # The first boot downloads the embedding model.
+      start_period: 60s
+
+volumes:
+  pg_data:
+  qdrant_data:
+  hf_cache:
+  ollama_models:

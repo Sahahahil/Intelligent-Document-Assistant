@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.162.5",
+    "httpx2>=2.16.0",
     "pydantic[email]>=2.14.3",
     "pydantic-settings>=2.16.2",
     "python-multipart>=0.0.33",
@@ -58,6 +59,13 @@ markers = [
     "model: downloads and runs the real sentence-transformers model",
 ]
 addopts = "-m 'not integration and not model'"
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
 
 [dependency-groups]
 dev = [

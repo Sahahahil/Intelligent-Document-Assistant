@@ -69,16 +69,6 @@ class ConversationStore:
             pipe.expire(key, self._ttl)
             await pipe.execute()
 
-    async def clear(self, session_id: str) -> None:
-        """Forget the session."""
-        async with redis_guard():
-            await self._redis.delete(self._key(session_id))
-
-    async def exists(self, session_id: str) -> bool:
-        """Whether the session has any stored messages."""
-        async with redis_guard():
-            return bool(await self._redis.exists(self._key(session_id)))
-
     @staticmethod
     def _key(session_id: str) -> str:
         return f"{KEY_PREFIX}{session_id}"

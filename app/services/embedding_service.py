@@ -1,6 +1,6 @@
 """Turns text into dense vectors with a local sentence-transformers model."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 from typing import Protocol, cast
 
@@ -9,20 +9,12 @@ from app.core.config import get_settings
 _BATCH_SIZE = 64
 
 
-class _Tokenizer(Protocol):
-    """The part of the model's tokenizer we use."""
-
-    def encode(self, text: str) -> list[int]: ...
-
-
 class _EmbeddingModel(Protocol):
     """The part of the model we use.
 
     `sentence-transformers` ships no usable type information, so this
     describes exactly the surface the service depends on.
     """
-
-    tokenizer: _Tokenizer
 
     def get_embedding_dimension(self) -> int: ...
 
@@ -48,8 +40,19 @@ class EmbeddingService:
     model name is stored on every document row.
     """
 
-    def __init__(self, model_name: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str | None = None,
+        *,
+        loader: Callable[[str], _EmbeddingModel] | None = None,
+    ) -> None:
+        """The service.
+
+        `loader` is the seam the tests use: they pass a fake model, so no
+        model is downloaded and torch is never imported.
+        """
         self._model_name = model_name or get_settings().embedding_model
+        self._loader = loader or _load_model
         self._model: _EmbeddingModel | None = None
 
     @property
@@ -80,13 +83,9 @@ class EmbeddingService:
         """Embed a single query string."""
         return self.embed_texts([text])[0]
 
-    def token_count(self, text: str) -> int:
-        """Word-piece token count as the model itself counts them."""
-        return len(self._load().tokenizer.encode(text))
-
     def _load(self) -> _EmbeddingModel:
         if self._model is None:
-            self._model = _load_model(self._model_name)
+            self._model = self._loader(self._model_name)
         return self._model
 
 

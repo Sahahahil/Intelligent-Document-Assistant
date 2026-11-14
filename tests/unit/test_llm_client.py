@@ -6,16 +6,14 @@ building, response parsing and the SDK's retry policy — without a network.
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx2
 import pytest
-from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from app.core.exceptions import UpstreamError
-from app.integrations import llm as llm_module
 from app.integrations.llm import ChatMessage, LLMClient, get_llm_client
 
 
@@ -44,27 +42,19 @@ def completion(content: str) -> dict[str, Any]:
 class FakeProvider:
     """A canned OpenAI-compatible endpoint."""
 
-    def __init__(
-        self, responder: Callable[[httpx2.Request], httpx2.Response] | None = None
-    ) -> None:
+    def __init__(self) -> None:
         self.requests: list[httpx2.Request] = []
-        self._responder = responder or (lambda request: httpx2.Response(200, json=completion("ok")))
+        self.responder: Callable[[httpx2.Request], httpx2.Response] = lambda request: (
+            httpx2.Response(200, json=completion("ok"))
+        )
 
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        transport = httpx2.MockTransport(self._handle)
-        http_client = httpx2.AsyncClient(transport=transport)
-        real_client = AsyncOpenAI
-
-        def factory(*, api_key: str, base_url: str | None, timeout: float) -> AsyncOpenAI:
-            return real_client(
-                api_key=api_key, base_url=base_url, timeout=timeout, http_client=http_client
-            )
-
-        monkeypatch.setattr(llm_module, "AsyncOpenAI", factory)
+    def http_client(self) -> httpx2.AsyncClient:
+        """An HTTP client whose transport is this provider."""
+        return httpx2.AsyncClient(transport=httpx2.MockTransport(self._handle))
 
     def _handle(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
-        return self._responder(request)
+        return self.responder(request)
 
     @property
     def last_body(self) -> dict[str, Any]:
@@ -73,23 +63,21 @@ class FakeProvider:
 
 
 @pytest.fixture
-def provider(monkeypatch: pytest.MonkeyPatch) -> FakeProvider:
-    fake = FakeProvider()
-    fake.install(monkeypatch)
-    return fake
+def provider() -> FakeProvider:
+    return FakeProvider()
 
 
 @pytest.fixture
-def client(provider: FakeProvider) -> LLMClient:
-    # Depends on the provider so the transport is patched before the client
-    # is constructed — the client builds its own HTTP client.
-    return LLMClient(api_key="sk-test-key", model="test-model")
+async def client(provider: FakeProvider) -> AsyncIterator[LLMClient]:
+    http_client = provider.http_client()
+    yield LLMClient(api_key="sk-test-key", model="test-model", http_client=http_client)
+    await http_client.aclose()
 
 
 async def test_complete_returns_the_stripped_content(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(200, json=completion("  hello  "))
+    provider.responder = lambda request: httpx2.Response(200, json=completion("  hello  "))
 
     result = await client.complete(messages=[ChatMessage(role="user", content="hi")])
 
@@ -99,7 +87,7 @@ async def test_complete_returns_the_stripped_content(
 async def test_complete_with_no_content_returns_an_empty_string(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(200, json=completion(""))
+    provider.responder = lambda request: httpx2.Response(200, json=completion(""))
 
     result = await client.complete(messages=[ChatMessage(role="user", content="hi")])
 
@@ -122,41 +110,47 @@ async def test_complete_sends_the_model_and_the_messages(
     assert body["messages"][1] == {"role": "user", "content": "hi"}
 
 
-async def test_complete_json_parses_the_object(client: LLMClient, provider: FakeProvider) -> None:
-    provider._responder = lambda request: httpx2.Response(
+async def test_the_json_response_format_is_requested(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    provider.responder = lambda request: httpx2.Response(
         200, json=completion('{"name": "Sahil", "email": "s@example.com"}')
     )
 
-    payload = await client.complete_json(messages=[ChatMessage(role="user", content="hi")])
+    await client.complete_structured(
+        messages=[ChatMessage(role="user", content="hi")], schema=Booking
+    )
 
-    assert payload == {"name": "Sahil", "email": "s@example.com"}
     assert provider.last_body["response_format"] == {"type": "json_object"}
 
 
-async def test_complete_json_with_invalid_json_is_an_upstream_error(
-    client: LLMClient, provider: FakeProvider
-) -> None:
-    provider._responder = lambda request: httpx2.Response(200, json=completion("not json"))
+async def test_invalid_json_is_an_upstream_error(client: LLMClient, provider: FakeProvider) -> None:
+    """Garbage from the provider is an upstream error, however it arrives."""
+    provider.responder = lambda request: httpx2.Response(200, json=completion("not json"))
 
     with pytest.raises(UpstreamError) as excinfo:
-        await client.complete_json(messages=[ChatMessage(role="user", content="hi")])
+        await client.complete_structured(
+            messages=[ChatMessage(role="user", content="hi")], schema=Booking
+        )
 
-    assert "invalid JSON" in str(excinfo.value)
+    assert "no JSON that matches the schema" in str(excinfo.value)
 
 
-async def test_complete_json_with_an_array_is_an_upstream_error(
+async def test_json_that_is_not_an_object_is_an_upstream_error(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(200, json=completion("[1, 2]"))
+    provider.responder = lambda request: httpx2.Response(200, json=completion("[1, 2]"))
 
     with pytest.raises(UpstreamError):
-        await client.complete_json(messages=[ChatMessage(role="user", content="hi")])
+        await client.complete_structured(
+            messages=[ChatMessage(role="user", content="hi")], schema=Booking
+        )
 
 
 async def test_complete_structured_validates_against_the_schema(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(
+    provider.responder = lambda request: httpx2.Response(
         200, json=completion('{"name": "Sahil", "email": "s@example.com"}')
     )
 
@@ -171,7 +165,7 @@ async def test_complete_structured_validates_against_the_schema(
 async def test_complete_structured_tells_the_model_the_schema(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(
+    provider.responder = lambda request: httpx2.Response(
         200, json=completion('{"name": "Sahil", "email": "s@example.com"}')
     )
 
@@ -180,14 +174,38 @@ async def test_complete_structured_tells_the_model_the_schema(
     )
 
     messages = provider.last_body["messages"]
-    assert "name" in messages[-1]["content"]
-    assert messages[0]["role"] == "user"
+    # The hint rides with the system prompt - a system message after the user
+    # turn makes a small model echo the schema instead of filling it in.
+    assert "name" in messages[0]["content"]
+    assert messages[0]["role"] == "system"
+
+
+async def test_complete_structured_keeps_the_schema_hint_with_the_system_prompt(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    provider.responder = lambda request: httpx2.Response(
+        200, json=completion('{"name": "Sahil", "email": "s@example.com"}')
+    )
+
+    await client.complete_structured(
+        messages=[
+            ChatMessage(role="system", content="You are a booking assistant."),
+            ChatMessage(role="user", content="hi"),
+        ],
+        schema=Booking,
+    )
+
+    messages = provider.last_body["messages"]
+    assert len(messages) == 2
+    assert "booking assistant" in messages[0]["content"]
+    assert "name" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
 
 
 async def test_complete_structured_with_a_bad_payload_is_an_upstream_error(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(200, json=completion('{"name": "Sahil"}'))
+    provider.responder = lambda request: httpx2.Response(200, json=completion('{"name": "Sahil"}'))
 
     with pytest.raises(UpstreamError) as excinfo:
         await client.complete_structured(
@@ -198,20 +216,88 @@ async def test_complete_structured_with_a_bad_payload_is_an_upstream_error(
     assert excinfo.value.details["raw"] == {"name": "Sahil"}
 
 
+async def test_a_provider_without_json_mode_is_asked_again_in_plain_text(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    """A local server that rejects the JSON mode still gets an answer."""
+
+    def responder(request: httpx2.Request) -> httpx2.Response:
+        if b"response_format" in request.content:
+            return httpx2.Response(500, json={"error": {"message": "not supported"}})
+        return httpx2.Response(
+            200,
+            json=completion('Sure!\n```json\n{"name": "Sahil", "email": "s@example.com"}\n```'),
+        )
+
+    provider.responder = responder
+
+    result = await client.complete_structured(
+        messages=[ChatMessage(role="user", content="book me an interview")], schema=Booking
+    )
+
+    assert isinstance(result, Booking)
+    assert result.name == "Sahil"
+    # The retry did not ask for the JSON mode again.
+    assert "response_format" not in provider.last_body
+
+
+async def test_a_model_that_echoes_the_schema_is_answered_anyway(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    """The echoed schema is JSON too - but only the answer validates."""
+
+    def responder(request: httpx2.Request) -> httpx2.Response:
+        if b"response_format" in request.content:
+            return httpx2.Response(500, json={"error": {"message": "not supported"}})
+        return httpx2.Response(
+            200,
+            json=completion(
+                '{"type": "object", "properties": {"name": {"type": "string"}}}\n'
+                '{"name": "Sahil", "email": "s@example.com"}'
+            ),
+        )
+
+    provider.responder = responder
+
+    result = await client.complete_structured(
+        messages=[ChatMessage(role="user", content="book me an interview")], schema=Booking
+    )
+
+    assert result.name == "Sahil"
+
+
+async def test_a_misconfigured_provider_is_not_retried_in_plain_text(
+    client: LLMClient, provider: FakeProvider
+) -> None:
+    """A 401 is a bad key, not a missing JSON mode - retrying would only hide it."""
+    provider.responder = lambda request: httpx2.Response(
+        401, json={"error": {"message": "bad key"}}
+    )
+
+    with pytest.raises(UpstreamError):
+        await client.complete_structured(
+            messages=[ChatMessage(role="user", content="hi")], schema=Booking
+        )
+
+    assert len(provider.requests) == 1
+
+
 async def test_without_an_api_key_the_call_fails(provider: FakeProvider) -> None:
-    client = LLMClient(api_key="", model="test-model")
+    http_client = provider.http_client()
+    client = LLMClient(api_key="", model="test-model", http_client=http_client)
 
     with pytest.raises(UpstreamError) as excinfo:
         await client.complete(messages=[ChatMessage(role="user", content="hi")])
 
     assert "LLM_API_KEY" in str(excinfo.value)
     assert provider.requests == []
+    await http_client.aclose()
 
 
 async def test_a_server_error_is_an_upstream_error(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(500, json={"error": {"message": "boom"}})
+    provider.responder = lambda request: httpx2.Response(500, json={"error": {"message": "boom"}})
 
     with pytest.raises(UpstreamError) as excinfo:
         await client.complete(messages=[ChatMessage(role="user", content="hi")])
@@ -222,7 +308,7 @@ async def test_a_server_error_is_an_upstream_error(
 async def test_a_rate_limit_is_retried_and_then_reported(
     client: LLMClient, provider: FakeProvider
 ) -> None:
-    provider._responder = lambda request: httpx2.Response(
+    provider.responder = lambda request: httpx2.Response(
         429, json={"error": {"message": "slow down"}}
     )
 
@@ -235,7 +321,7 @@ async def test_a_rate_limit_is_retried_and_then_reported(
 
 
 async def test_a_bad_request_is_not_retried(client: LLMClient, provider: FakeProvider) -> None:
-    provider._responder = lambda request: httpx2.Response(400, json={"error": {"message": "nope"}})
+    provider.responder = lambda request: httpx2.Response(400, json={"error": {"message": "nope"}})
 
     with pytest.raises(UpstreamError) as excinfo:
         await client.complete(messages=[ChatMessage(role="user", content="hi")])
@@ -250,7 +336,7 @@ async def test_a_connection_error_is_an_upstream_error(
     def boom(request: httpx2.Request) -> httpx2.Response:
         raise httpx2.ConnectError("no route to host", request=request)
 
-    provider._responder = boom
+    provider.responder = boom
 
     with pytest.raises(UpstreamError) as excinfo:
         await client.complete(messages=[ChatMessage(role="user", content="hi")])

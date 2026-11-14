@@ -3,25 +3,24 @@
 import pymupdf
 
 from app.core.exceptions import ExtractionError
-from app.utils.base import ExtractedText, build_result
+from app.utils.base import require_text
 
 
 class PdfExtractor:
     """Reads a PDF with PyMuPDF and returns the text of every page."""
 
-    def extract(self, data: bytes, *, filename: str) -> ExtractedText:
+    def extract(self, data: bytes, *, filename: str) -> str:
         try:
             with pymupdf.open(stream=data, filetype="pdf") as doc:
                 if doc.needs_pass:
                     raise ExtractionError(f"'{filename}' is password protected")
-                page_count = doc.page_count
                 text = "\n\n".join(self._page_text(page) for page in doc)
         except ExtractionError:
             raise
         except Exception as exc:
             # Corrupt, truncated or otherwise unreadable files land here.
             raise ExtractionError(f"Could not read '{filename}': {exc}") from exc
-        return build_result(text, page_count, filename=filename)
+        return require_text(text, filename=filename)
 
     @staticmethod
     def _page_text(page: pymupdf.Page) -> str:

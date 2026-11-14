@@ -7,40 +7,25 @@ suite down for no extra coverage here.
 """
 
 from collections.abc import AsyncIterator, Sequence
-from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 from qdrant_client import AsyncQdrantClient
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chunking.base import DocumentChunk
 from app.core.exceptions import ConflictError, UpstreamError
-from app.db.session import AsyncSessionLocal, engine
 from app.integrations.qdrant import VectorStore
 from app.models.document import DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.services.embedding_service import EmbeddingService
 from app.services.ingestion_service import IngestionService
+from tests.fakes import FakeEmbeddingService
 
 pytestmark = pytest.mark.integration
 
 VECTOR_SIZE = 384
-
-
-class FakeEmbeddingService:
-    """Deterministic unit vectors — no model download needed."""
-
-    model_name = "fake-model"
-    dimension = VECTOR_SIZE
-
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        return [[0.1] * VECTOR_SIZE for _ in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        return [0.1] * VECTOR_SIZE
 
 
 class FailingVectorStore(VectorStore):
@@ -59,38 +44,22 @@ class FailingVectorStore(VectorStore):
 
 
 @pytest.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-    async with AsyncSessionLocal() as db_session:
-        await db_session.execute(text("DELETE FROM documents"))
-        await db_session.commit()
-        yield db_session
-    await engine.dispose()
-
-
-@pytest.fixture
-async def client(tmp_path: Path) -> AsyncIterator[AsyncQdrantClient]:
-    qdrant_client = AsyncQdrantClient(path=str(tmp_path / "qdrant"))
-    yield qdrant_client
-    await qdrant_client.close()
-
-
-@pytest.fixture
-async def store(client: AsyncQdrantClient) -> AsyncIterator[VectorStore]:
-    vector_store = VectorStore(client, "documents", VECTOR_SIZE)
+async def store(qdrant_client: AsyncQdrantClient, collection: str) -> AsyncIterator[VectorStore]:
+    vector_store = VectorStore(qdrant_client, collection, VECTOR_SIZE)
     await vector_store.ensure_collection()
     yield vector_store
 
 
 @pytest.fixture
-def failing_store(client: AsyncQdrantClient) -> VectorStore:
-    return FailingVectorStore(client, "documents", VECTOR_SIZE)
+def failing_store(qdrant_client: AsyncQdrantClient, collection: str) -> VectorStore:
+    return FailingVectorStore(qdrant_client, collection, VECTOR_SIZE)
 
 
-def make_service(session: AsyncSession, store: VectorStore) -> IngestionService:
+def make_service(db_session: AsyncSession, store: VectorStore) -> IngestionService:
     return IngestionService(
-        document_repo=DocumentRepository(session),
+        document_repo=DocumentRepository(db_session),
         vector_store=store,
-        embedding_service=cast(EmbeddingService, FakeEmbeddingService()),
+        embedding_service=cast(EmbeddingService, FakeEmbeddingService(dimension=VECTOR_SIZE)),
     )
 
 
@@ -99,8 +68,10 @@ def payload() -> bytes:
     return f"Machine learning is a field of study. {uuid4().hex}".encode()
 
 
-async def test_a_document_is_ingested_end_to_end(session: AsyncSession, store: VectorStore) -> None:
-    service = make_service(session, store)
+async def test_a_document_is_ingested_end_to_end(
+    db_session: AsyncSession, store: VectorStore
+) -> None:
+    service = make_service(db_session, store)
 
     result = await service.ingest(
         filename="notes.txt",
@@ -112,7 +83,7 @@ async def test_a_document_is_ingested_end_to_end(session: AsyncSession, store: V
     assert result.status == "completed"
     assert result.total_chunks > 0
 
-    document = await DocumentRepository(session).get(result.document_id)
+    document = await DocumentRepository(db_session).get(result.document_id)
     assert document is not None
     assert document.status == DocumentStatus.COMPLETED
     assert document.total_chunks == result.total_chunks
@@ -123,9 +94,9 @@ async def test_a_document_is_ingested_end_to_end(session: AsyncSession, store: V
 
 
 async def test_the_same_content_twice_is_a_conflict(
-    session: AsyncSession, store: VectorStore
+    db_session: AsyncSession, store: VectorStore
 ) -> None:
-    service = make_service(session, store)
+    service = make_service(db_session, store)
     data = payload()
     await service.ingest(
         filename="notes.txt", content_type="text/plain", data=data, chunking_strategy="recursive"
@@ -139,15 +110,15 @@ async def test_the_same_content_twice_is_a_conflict(
             chunking_strategy="recursive",
         )
 
-    rows, total = await DocumentRepository(session).list()
+    rows, total = await DocumentRepository(db_session).list()
     assert total == 1
     assert len(rows) == 1
 
 
 async def test_a_failed_upload_leaves_a_failed_row_and_no_vectors(
-    session: AsyncSession, store: VectorStore, failing_store: VectorStore
+    db_session: AsyncSession, store: VectorStore, failing_store: VectorStore
 ) -> None:
-    service = make_service(session, failing_store)
+    service = make_service(db_session, failing_store)
 
     with pytest.raises(UpstreamError):
         await service.ingest(
@@ -157,7 +128,7 @@ async def test_a_failed_upload_leaves_a_failed_row_and_no_vectors(
             chunking_strategy="recursive",
         )
 
-    rows, total = await DocumentRepository(session).list()
+    rows, total = await DocumentRepository(db_session).list()
     assert total == 1
     assert rows[0].status == DocumentStatus.FAILED
     assert rows[0].error_message
@@ -165,10 +136,10 @@ async def test_a_failed_upload_leaves_a_failed_row_and_no_vectors(
 
 
 async def test_a_failed_upload_can_be_retried(
-    session: AsyncSession, store: VectorStore, failing_store: VectorStore
+    db_session: AsyncSession, store: VectorStore, failing_store: VectorStore
 ) -> None:
     data = payload()
-    broken = make_service(session, failing_store)
+    broken = make_service(db_session, failing_store)
     with pytest.raises(UpstreamError):
         await broken.ingest(
             filename="notes.txt",
@@ -177,13 +148,13 @@ async def test_a_failed_upload_can_be_retried(
             chunking_strategy="recursive",
         )
 
-    service = make_service(session, store)
+    service = make_service(db_session, store)
     result = await service.ingest(
         filename="notes.txt", content_type="text/plain", data=data, chunking_strategy="recursive"
     )
 
     assert result.status == "completed"
-    rows, total = await DocumentRepository(session).list()
+    rows, total = await DocumentRepository(db_session).list()
     assert total == 1
     assert rows[0].status == DocumentStatus.COMPLETED
     assert await store.count_document(result.document_id) == result.total_chunks

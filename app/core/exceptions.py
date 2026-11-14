@@ -72,6 +72,18 @@ _HTTP_CODES = {
 }
 
 
+def _readable(msg: str) -> str:
+    """A validation message a human can act on.
+
+    FastAPI says "Expected UploadFile, received: <class 'str'>" when the file
+    arrives as a plain text field - which is what happens when the request
+    was not built as a file upload.
+    """
+    if "Expected UploadFile" in msg:
+        return "The file must be sent as an upload, not as text."
+    return msg
+
+
 def _envelope(
     request: Request,
     *,
@@ -113,7 +125,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         assert isinstance(exc, RequestValidationError)
         # Only the JSON-safe fields: pydantic's `ctx` can hold arbitrary objects.
         errors = [
-            {"loc": list(err["loc"]), "msg": err["msg"], "type": err["type"]}
+            {"loc": list(err["loc"]), "msg": _readable(err["msg"]), "type": err["type"]}
             for err in exc.errors()
         ]
         return _envelope(

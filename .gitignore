@@ -1,6 +1,3 @@
-# Claude Code
-.claude/**
-
 # Secrets — never commit real env files
 .env
 .env.*
@@ -33,6 +30,7 @@ qdrant_data/
 *.db
 *.sqlite
 *.sqlite3
+dump.rdb
 
 # Logs and scratch
 *.log

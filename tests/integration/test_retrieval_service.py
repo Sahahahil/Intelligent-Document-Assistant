@@ -7,7 +7,6 @@ deterministic — the point here is the vector store plumbing, not the model.
 """
 
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -16,8 +15,10 @@ from qdrant_client import AsyncQdrantClient
 
 from app.chunking.base import DocumentChunk
 from app.integrations.qdrant import VectorStore
+from app.models.document import ChunkingStrategy
 from app.services.embedding_service import EmbeddingService
 from app.services.retrieval_service import RetrievalService
+from tests.fakes import FakeEmbeddingService
 
 pytestmark = pytest.mark.integration
 
@@ -32,31 +33,19 @@ BANANA_QUERY = [-0.7, 0.7, 0.0, 0.0]
 ALIEN_QUERY = [0.0, 0.0, 1.0, 0.0]
 
 
-class FakeEmbeddingService:
-    """Maps a query to a fixed vector by keyword."""
-
-    model_name = "fake-model"
-    dimension = DIMENSION
-
-    def embed_query(self, text: str) -> list[float]:
-        lowered = text.lower()
-        if "banana" in lowered:
-            return list(BANANA_QUERY)
-        if "supervised" in lowered or "machine learning" in lowered:
-            return list(ML_QUERY)
-        return list(ALIEN_QUERY)
+def query_vector(text: str) -> list[float]:
+    """The vector a query gets - by keyword, so the ranking is fixed."""
+    lowered = text.lower()
+    if "banana" in lowered:
+        return list(BANANA_QUERY)
+    if "supervised" in lowered or "machine learning" in lowered:
+        return list(ML_QUERY)
+    return list(ALIEN_QUERY)
 
 
 @pytest.fixture
-async def client(tmp_path: Path) -> AsyncIterator[AsyncQdrantClient]:
-    qdrant_client = AsyncQdrantClient(path=str(tmp_path / "qdrant"))
-    yield qdrant_client
-    await qdrant_client.close()
-
-
-@pytest.fixture
-async def store(client: AsyncQdrantClient) -> AsyncIterator[VectorStore]:
-    vector_store = VectorStore(client, "documents", DIMENSION)
+async def store(qdrant_client: AsyncQdrantClient, collection: str) -> AsyncIterator[VectorStore]:
+    vector_store = VectorStore(qdrant_client, collection, DIMENSION)
     await vector_store.ensure_collection()
     yield vector_store
 
@@ -67,7 +56,9 @@ def make_chunk(document_id: UUID, index: int, content: str) -> DocumentChunk:
         chunk_index=index,
         document_id=document_id,
         token_count=len(content.split()),
-        metadata={"strategy": "fixed_size"},
+        strategy=ChunkingStrategy.FIXED_SIZE,
+        start_char=0,
+        end_char=10,
     )
 
 
@@ -99,7 +90,10 @@ async def seeded(store: VectorStore) -> AsyncIterator[tuple[UUID, UUID]]:
 def service(store: VectorStore) -> RetrievalService:
     return RetrievalService(
         vector_store=store,
-        embedding_service=cast(EmbeddingService, FakeEmbeddingService()),
+        embedding_service=cast(
+            EmbeddingService,
+            FakeEmbeddingService(dimension=DIMENSION, mapper=query_vector),
+        ),
     )
 
 
@@ -133,18 +127,6 @@ async def test_filtering_by_an_unrelated_document_returns_nothing(
     results = await service.retrieve("what is supervised learning?", document_ids=[banana_document])
 
     assert results == []
-
-
-async def test_the_sources_name_the_document(
-    service: RetrievalService, seeded: tuple[UUID, UUID]
-) -> None:
-    ml_document, _ = seeded
-
-    sources = await service.retrieve_sources("what is supervised learning?")
-
-    assert sources[0].document_id == ml_document
-    assert sources[0].filename == "ml.pdf"
-    assert sources[0].chunk_index == 0
 
 
 async def test_an_empty_store_returns_nothing(service: RetrievalService) -> None:

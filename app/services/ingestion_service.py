@@ -82,8 +82,10 @@ def _resolve_chunk_params(
     chunk_size: int | None, chunk_overlap: int | None, settings: Settings
 ) -> tuple[int, int]:
     """The chunk parameters actually used, so the row records the truth."""
-    size = settings.chunk_size if chunk_size is None else chunk_size
-    overlap = settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    # A zero means "not set": an empty number field in the API docs is sent
+    # as 0, and that should fall back to the configured default.
+    size = chunk_size if chunk_size else settings.chunk_size
+    overlap = chunk_overlap if chunk_overlap else settings.chunk_overlap
     if size <= 0:
         raise ValidationError("chunk_size must be > 0")
     if overlap < 0:
@@ -228,9 +230,9 @@ class IngestionService:
     ) -> tuple[list[DocumentChunk], list[list[float]]]:
         """Extract, chunk and embed. Off the event loop — all three are CPU-bound."""
         extractor = get_extractor(extension)
-        extracted = await asyncio.to_thread(extractor.extract, data, filename=document.filename)
+        text = await asyncio.to_thread(extractor.extract, data, filename=document.filename)
         chunker = get_chunker(strategy, chunk_size=size, chunk_overlap=overlap)
-        chunks = await asyncio.to_thread(chunker.split, extracted.text, document_id=document.id)
+        chunks = await asyncio.to_thread(chunker.split, text, document_id=document.id)
         if not chunks:
             raise ExtractionError(f"'{document.filename}' produced no chunks")
         vectors = await asyncio.to_thread(

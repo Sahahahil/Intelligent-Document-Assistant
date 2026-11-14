@@ -4,13 +4,13 @@ The orchestrator and the conversation store are replaced with fakes through
 FastAPI's dependency overrides - this exercises the HTTP layer only.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import status
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
 from app.api.deps import get_chat_orchestrator, get_conversation_store
 from app.core.exceptions import UpstreamError
@@ -48,14 +48,9 @@ class FakeOrchestrator:
 class FakeConversationStore:
     def __init__(self) -> None:
         self.messages: list[ChatMessage] = []
-        self.cleared: list[str] = []
 
     async def get_history(self, session_id: str, *, limit: int = 20) -> list[ChatMessage]:
         return self.messages[:limit]
-
-    async def clear(self, session_id: str) -> None:
-        self.cleared.append(session_id)
-        self.messages = []
 
 
 @pytest.fixture
@@ -68,14 +63,11 @@ def store() -> FakeConversationStore:
     return FakeConversationStore()
 
 
-@pytest.fixture
-async def client(
-    orchestrator: FakeOrchestrator, store: FakeConversationStore
-) -> AsyncIterator[AsyncClient]:
+@pytest.fixture(autouse=True)
+def _overrides(orchestrator: FakeOrchestrator, store: FakeConversationStore) -> Iterator[None]:
     app.dependency_overrides[get_chat_orchestrator] = lambda: orchestrator
     app.dependency_overrides[get_conversation_store] = lambda: store
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
-        yield http
+    yield
     app.dependency_overrides.clear()
 
 
@@ -114,6 +106,19 @@ async def test_an_empty_message_is_rejected(client: AsyncClient) -> None:
     assert response.json()["error"]["code"] == "validation_error"
 
 
+async def test_a_whitespace_only_message_is_rejected(client: AsyncClient) -> None:
+    response = await client.post("/api/v1/chat", json={"session_id": "s1", "message": "   \n\t "})
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_the_message_is_trimmed(client: AsyncClient, orchestrator: FakeOrchestrator) -> None:
+    await client.post("/api/v1/chat", json={"session_id": "s1", "message": "  hello  "})
+
+    assert orchestrator.requests[0].message == "hello"
+
+
 async def test_an_unsafe_session_id_is_rejected(client: AsyncClient) -> None:
     response = await client.post("/api/v1/chat", json={"session_id": "bad id!", "message": "hello"})
 
@@ -135,54 +140,9 @@ async def test_an_llm_failure_is_a_502(client: AsyncClient, orchestrator: FakeOr
     assert response.json()["error"]["code"] == "upstream_error"
 
 
-async def test_the_session_history_is_returned(
-    client: AsyncClient, store: FakeConversationStore
-) -> None:
-    store.messages = [
-        ChatMessage(role="user", content="hello"),
-        ChatMessage(role="assistant", content="hi"),
-    ]
-
-    response = await client.get("/api/v1/chat/sessions/s1")
-
-    assert response.status_code == status.HTTP_200_OK
-    body = response.json()
-    assert body["session_id"] == "s1"
-    assert [message["content"] for message in body["messages"]] == ["hello", "hi"]
-
-
-async def test_an_unknown_session_has_an_empty_history(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/chat/sessions/nobody")
-
-    assert response.status_code == status.HTTP_200_OK
-    assert response.json()["messages"] == []
-
-
-async def test_clearing_a_session_empties_it(
-    client: AsyncClient, store: FakeConversationStore
-) -> None:
-    store.messages = [ChatMessage(role="user", content="hello")]
-
-    response = await client.delete("/api/v1/chat/sessions/s1")
-
-    assert response.status_code == status.HTTP_204_NO_CONTENT
-    assert store.cleared == ["s1"]
-    follow_up = await client.get("/api/v1/chat/sessions/s1")
-    assert follow_up.json()["messages"] == []
-
-
-async def test_an_unsafe_session_id_in_the_path_is_rejected(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/chat/sessions/bad$id")
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
-
-
 async def test_the_routes_are_documented(client: AsyncClient) -> None:
     response = await client.get("/openapi.json")
 
     paths = response.json()["paths"]
     assert "/api/v1/chat" in paths
-    assert "/api/v1/chat/sessions/{session_id}" in paths
     assert "post" in paths["/api/v1/chat"]
-    assert "get" in paths["/api/v1/chat/sessions/{session_id}"]
-    assert "delete" in paths["/api/v1/chat/sessions/{session_id}"]

@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 
 from app.chunking import DocumentChunk, FixedSizeChunker, count_tokens
+from app.models.document import ChunkingStrategy
 
 DOC_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -81,10 +82,8 @@ def test_metadata_points_back_into_the_original_text() -> None:
     chunks = FixedSizeChunker(chunk_size=500, chunk_overlap=100).split(text, document_id=DOC_ID)
 
     for chunk in chunks:
-        start = chunk.metadata["start_char"]
-        end = chunk.metadata["end_char"]
-        assert text[start:end].strip() == chunk.content
-        assert chunk.metadata["strategy"] == "fixed_size"
+        assert text[chunk.start_char : chunk.end_char].strip() == chunk.content
+        assert chunk.strategy == ChunkingStrategy.FIXED_SIZE
 
 
 def test_chunk_is_frozen() -> None:

@@ -24,11 +24,6 @@ REWRITE_INSTRUCTION = (
     "4. If the question is already standalone, repeat it unchanged."
 )
 
-SUMMARY_INSTRUCTION = (
-    "Summarise the conversation so far in at most three sentences. "
-    "Name the concrete subjects being discussed. Output only the summary."
-)
-
 
 class QueryRewriter:
     """Rewrites a follow-up into a query that retrieves the right chunks."""
@@ -55,19 +50,6 @@ class QueryRewriter:
             logger.warning("Query rewriting produced an unusable query; using the original message")
             return message
         return cleaned
-
-    async def summarize_conversation(self, history: Sequence[ChatMessage]) -> str:
-        """A short summary of the conversation - empty on any failure."""
-        if not history:
-            return ""
-        messages = [ChatMessage(role="system", content=SUMMARY_INSTRUCTION)]
-        messages.extend(history[-MAX_HISTORY_MESSAGES:])
-        try:
-            summary = await self._llm.complete(messages=messages, temperature=0.0)
-        except Exception:
-            logger.warning("Conversation summarisation failed", exc_info=True)
-            return ""
-        return summary.strip()[:MAX_OUTPUT_CHARS]
 
     @staticmethod
     def _clean(rewritten: str) -> str:

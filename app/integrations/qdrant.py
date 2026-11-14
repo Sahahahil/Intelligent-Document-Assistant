@@ -43,17 +43,8 @@ class RetrievedChunk:
     score: float
 
 
-@dataclass(frozen=True, slots=True)
-class StoredChunk:
-    """A chunk as it sits in the store — no score, it was never a search result."""
-
-    chunk_index: int
-    content: str
-    strategy: str
-
-
 @asynccontextmanager
-async def _qdrant_guard() -> AsyncIterator[None]:
+async def qdrant_guard() -> AsyncIterator[None]:
     """Turn any client failure into an `UpstreamError` (502)."""
     try:
         yield
@@ -73,7 +64,7 @@ class VectorStore:
 
     async def ensure_collection(self) -> None:
         """Create the collection if needed; verify its vector size if it exists."""
-        async with _qdrant_guard():
+        async with qdrant_guard():
             if not await self._client.collection_exists(self._collection):
                 await self._client.create_collection(
                     collection_name=self._collection,
@@ -128,13 +119,13 @@ class VectorStore:
                     "filename": filename,
                     "chunk_index": chunk.chunk_index,
                     "content": chunk.content,
-                    "strategy": chunk.metadata.get("strategy"),
+                    "strategy": chunk.strategy.value,
                     "created_at": datetime.now(UTC).isoformat(),
                 },
             )
             for chunk, vector in zip(chunks, vectors, strict=True)
         ]
-        async with _qdrant_guard():
+        async with qdrant_guard():
             await self._client.upsert(collection_name=self._collection, points=points, wait=True)
         return len(points)
 
@@ -162,7 +153,7 @@ class VectorStore:
                     )
                 ]
             )
-        async with _qdrant_guard():
+        async with qdrant_guard():
             response = await self._client.query_points(
                 collection_name=self._collection,
                 query=list(vector),
@@ -185,7 +176,7 @@ class VectorStore:
 
     async def delete_document(self, document_id: UUID) -> None:
         """Remove every chunk of a document. Unknown documents are a no-op."""
-        async with _qdrant_guard():
+        async with qdrant_guard():
             await self._client.delete(
                 collection_name=self._collection,
                 points_selector=models.FilterSelector(
@@ -200,41 +191,9 @@ class VectorStore:
                 ),
             )
 
-    async def list_chunks(self, document_id: UUID, *, limit: int = 20) -> list[StoredChunk]:
-        """The stored chunks of a document, for previewing.
-
-        Scrolls the collection rather than searching, so there is no score —
-        the order is by chunk index.
-        """
-        async with _qdrant_guard():
-            points, _ = await self._client.scroll(
-                collection_name=self._collection,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="document_id",
-                            match=models.MatchValue(value=str(document_id)),
-                        )
-                    ]
-                ),
-                limit=limit,
-                with_payload=True,
-            )
-        chunks: list[StoredChunk] = []
-        for point in points:
-            payload = point.payload or {}
-            chunks.append(
-                StoredChunk(
-                    chunk_index=int(payload.get("chunk_index", 0)),
-                    content=str(payload.get("content", "")),
-                    strategy=str(payload.get("strategy") or ""),
-                )
-            )
-        return sorted(chunks, key=lambda chunk: chunk.chunk_index)
-
     async def count_document(self, document_id: UUID) -> int:
         """How many chunks a document has in the store."""
-        async with _qdrant_guard():
+        async with qdrant_guard():
             result = await self._client.count(
                 collection_name=self._collection,
                 count_filter=models.Filter(

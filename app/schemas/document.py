@@ -55,19 +55,3 @@ class DocumentListResponse(BaseModel):
     total: int
     limit: int
     offset: int
-
-
-class DocumentChunkPreview(BaseModel):
-    """One stored chunk, as it sits in the vector store."""
-
-    chunk_index: int
-    content: str
-    strategy: str
-
-
-class DocumentChunksResponse(BaseModel):
-    """A preview of the chunks stored for a document."""
-
-    document_id: UUID
-    total_chunks: int
-    items: list[DocumentChunkPreview]

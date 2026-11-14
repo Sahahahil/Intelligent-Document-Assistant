@@ -3,9 +3,8 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from app.integrations.llm import Role
 from app.schemas.booking import BookingModel
 
 # The session id becomes a Redis key, so it is kept to a safe charset.
@@ -18,6 +17,18 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128, pattern=SESSION_ID_PATTERN)
     message: str = Field(min_length=1, max_length=8000)
     document_ids: list[UUID] | None = None
+
+    @field_validator("message")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        """A message of only whitespace is not a message.
+
+        `min_length` counts the spaces, so the blank case is caught here.
+        """
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("message must not be blank")
+        return stripped
 
 
 class SourceModel(BaseModel):
@@ -38,18 +49,3 @@ class ChatResponse(BaseModel):
     booking: BookingModel | None = None
     context_used: bool = True
     created_at: datetime
-
-
-class SessionMessageModel(BaseModel):
-    """One stored message."""
-
-    role: Role
-    content: str
-    created_at: datetime | None = None
-
-
-class SessionHistoryResponse(BaseModel):
-    """A session's stored conversation."""
-
-    session_id: str
-    messages: list[SessionMessageModel] = Field(default_factory=list)
