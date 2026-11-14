@@ -1,10 +1,11 @@
 """Booking extraction tests - the LLM is a fake.
 
-The fake mimics the real client: it validates the payload against the schema
-it was given and raises `UpstreamError` when the payload does not fit, exactly
-like `LLMClient.complete_structured` does.
+The fake validates the payload against the schema it was given, the way
+`LLMClient.complete_structured` does - a payload that does not fit raises,
+and the extractor falls back to an empty extraction.
 """
 
+import json
 import logging
 from collections.abc import Sequence
 from datetime import date, time, timedelta
@@ -12,7 +13,6 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 from sqlalchemy.exc import IntegrityError
 
@@ -26,45 +26,14 @@ from app.services.booking_service import (
     BookingService,
     missing_fields,
 )
-
-
-class FakeLLM:
-    def __init__(
-        self, payload: dict[str, Any] | None = None, *, error: Exception | None = None
-    ) -> None:
-        self.payload = payload if payload is not None else {}
-        self.error = error
-        self.calls: list[dict[str, object]] = []
-
-    async def complete_structured(
-        self,
-        *,
-        messages: Sequence[ChatMessage],
-        schema: type[BaseModel],
-        temperature: float = 0.0,
-    ) -> BaseModel:
-        self.calls.append(
-            {"messages": list(messages), "schema": schema, "temperature": temperature}
-        )
-        if self.error is not None:
-            raise self.error
-        try:
-            return schema.model_validate(self.payload)
-        except ValidationError as exc:
-            raise UpstreamError(
-                "LLM output did not match the expected schema",
-                details={"errors": exc.errors()},
-            ) from exc
-
-    @property
-    def sent(self) -> list[ChatMessage]:
-        return cast(list[ChatMessage], self.calls[0]["messages"])
+from tests.fakes import FakeLLM
 
 
 def service_with(
     payload: dict[str, Any] | None = None, *, error: Exception | None = None
 ) -> tuple[BookingExtractor, FakeLLM]:
-    llm = FakeLLM(payload, error=error)
+    """An extractor whose model answers with `payload` - or fails with `error`."""
+    llm = FakeLLM(error) if error is not None else FakeLLM(json.dumps(payload or {}, default=str))
     return BookingExtractor(cast(LLMClient, llm)), llm
 
 
@@ -151,7 +120,7 @@ async def test_an_empty_payload_gives_the_default() -> None:
 
     assert result.is_booking_request is False
     assert result.fields.name is None
-    assert result.missing_fields == ["name", "email", "date", "time"]
+    assert missing_fields(result.fields) == ["name", "email", "date", "time"]
 
 
 async def test_invalid_json_gives_the_default(
@@ -180,7 +149,7 @@ async def test_the_missing_fields_name_what_is_absent() -> None:
 
     result = await service.extract("my name is Sahil Duwal", [])
 
-    assert result.missing_fields == ["email", "date", "time"]
+    assert missing_fields(result.fields) == ["email", "date", "time"]
 
 
 async def test_the_missing_fields_are_computed_in_order() -> None:
@@ -188,7 +157,7 @@ async def test_the_missing_fields_are_computed_in_order() -> None:
 
     result = await service.extract("schedule an interview", [])
 
-    assert result.missing_fields == ["name", "email", "date", "time"]
+    assert missing_fields(result.fields) == ["name", "email", "date", "time"]
 
 
 async def test_the_history_reaches_the_prompt() -> None:
@@ -243,7 +212,7 @@ async def test_a_date_in_the_past_is_dropped(
         result = await service.extract("January 1, 2020", [])
 
     assert result.fields.interview_date is None
-    assert "date" in result.missing_fields
+    assert "date" in missing_fields(result.fields)
     assert "past" in caplog.text
 
 
@@ -523,7 +492,6 @@ async def test_a_duplicate_booking_is_not_written_twice(
         interview_date=TOMORROW,
         interview_time=time(14, 0),
         status=BookingStatus.CONFIRMED,
-        raw_payload={},
     )
     repo.conflicts[("sahil@example.com", TOMORROW, time(14, 0))] = existing
     script(
@@ -555,7 +523,6 @@ async def test_an_integrity_error_returns_the_existing_booking(
         interview_date=TOMORROW,
         interview_time=time(14, 0),
         status=BookingStatus.CONFIRMED,
-        raw_payload={},
     )
     repo.conflicts[("sahil@example.com", TOMORROW, time(14, 0))] = existing
     repo.error = IntegrityError("insert", {}, Exception("duplicate key"))

@@ -20,7 +20,7 @@ Two REST APIs, built on FastAPI:
 - [API 2 — Conversational RAG](#api-2--conversational-rag)
 - [Interview booking](#interview-booking)
 - [Project structure](#project-structure)
-- [Getting started](#getting-started)
+- [Running the project](#running-the-project)
 - [Design decisions](#design-decisions)
 - [Known limitations](#known-limitations)
 - [Constraints honoured](#constraints-honoured)
@@ -93,7 +93,6 @@ They exist for different reasons and are not interchangeable:
 POST /api/v1/documents/ingest      multipart/form-data
 GET  /api/v1/documents             list, paginated, filterable by status
 GET  /api/v1/documents/{id}        document detail
-GET  /api/v1/documents/{id}/chunks chunk preview
 DELETE /api/v1/documents/{id}      removes the row and its vectors
 ```
 
@@ -118,7 +117,7 @@ Two details that matter more than they look:
 
 ## Chunking strategies
 
-Both strategies return the same structure (`content`, `chunk_index`, `document_id`, `token_count`, `metadata`), so they are fully interchangeable downstream.
+Both strategies return the same structure (`content`, `chunk_index`, `document_id`, `token_count`, `strategy`, `start_char`, `end_char`), so they are fully interchangeable downstream.
 
 **A — Fixed size with overlap.** The text is tokenised, then windows of `chunk_size` tokens are emitted, advancing by `chunk_size - chunk_overlap` so consecutive chunks share context. Simple, uniform, and the overlap means a fact split across a boundary is still fully present in one of the chunks.
 
@@ -129,9 +128,7 @@ Fixed-size is predictable and cheap. Recursive produces chunks that a human woul
 ## API 2 — Conversational RAG
 
 ```
-POST   /api/v1/chat                    send a message, get an answer
-GET    /api/v1/chat/sessions/{id}      inspect the stored conversation
-DELETE /api/v1/chat/sessions/{id}      clear a session's history
+POST /api/v1/chat                  send a message, get an answer
 ```
 
 Request:
@@ -196,7 +193,7 @@ Layered so that each concern can be tested on its own:
 app/
 ├── api/          # routers — HTTP only, no business logic
 │   └── v1/       # documents.py, chat.py
-├── core/         # settings, logging, exception types
+├── core/         # settings, exception types
 ├── schemas/      # Pydantic request/response models
 ├── models/       # SQLAlchemy ORM models
 ├── services/     # business logic (ingestion, rag, retrieval, booking, …)
@@ -207,38 +204,180 @@ app/
 └── utils/        # PDF and text extraction
 
 tests/{unit,integration}/
-scripts/          # init_qdrant.py
+scripts/          # setup_local.sh
 ```
 
 The dependency direction is one-way: `api → services → repositories/integrations`. Services never import from `api`, and the API layer never touches a database session directly.
 
-## Getting started
+## Running the project
 
-Quickstart — the ingestion API works today; the chat API arrives with the conversational phase:
+### What you need
+
+| Requirement | Why | Notes |
+|-------------|-----|-------|
+| **Python 3.11+** | the app's language | pinned in `.python-version`; `uv` installs it for you |
+| **[uv](https://docs.astral.sh/uv/)** | dependency + environment manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| **PostgreSQL 14+** | document metadata, bookings | client binaries only (`initdb`, `pg_ctl`, `psql`, `createdb`) |
+| **Redis 6+** (or Valkey) | conversation memory | client binaries only (`redis-server`, `redis-cli`) |
+| **An OpenAI-compatible LLM key** | answering questions, booking extraction | only `/chat` needs it — ingestion and the tests do not |
+| **~6 GB disk, ~2 GB RAM** | `torch` + CUDA wheels dominate the install | the embedding model itself is only ~90 MB, downloaded once on first use |
+
+No Docker, no Qdrant server, no cloud account. Qdrant runs embedded on disk.
+
+Install the system packages:
 
 ```bash
-# 1. infrastructure — native services, no containers
-sudo pacman -S postgresql redis           # once
-sudo ./scripts/setup_local.sh             # init + start postgres, start redis
-
-# 2. application
-uv sync
-uv run alembic upgrade head                # create the schema
-uv run uvicorn app.main:app --reload      # http://localhost:8000/docs
-
-# 3. ingest a document
-curl -F file=@machine_learning.pdf -F chunking_strategy=recursive \
-     http://localhost:8000/api/v1/documents/ingest
-
-# 4. ask a question
-curl -X POST http://localhost:8000/api/v1/chat \
-     -H 'Content-Type: application/json' \
-     -d '{"session_id":"demo","message":"What is supervised learning?"}'
+sudo pacman -S postgresql redis            # Arch / CachyOS
+# sudo apt install postgresql redis-server  # Debian / Ubuntu
+# brew install postgresql@16 redis          # macOS
 ```
 
-Configuration is entirely environment-driven (`app/core/config.py`); `.env.example` documents every variable. Secrets live in `.env`, which is not committed.
+### 1. Get the code and install the dependencies
 
-## Tests
+```bash
+git clone git@github.com:Sahahahil/Intelligent-Document-Assistant.git
+cd Intelligent-Document-Assistant
+uv sync                 # creates .venv with Python 3.11 and installs everything
+```
+
+`uv sync` installs the app and the dev tools (pytest, ruff, mypy). It also pulls
+`torch` — expect a large first download.
+
+### 2. Configure it
+
+```bash
+cp .env.example .env
+```
+
+`.env` is where every setting lives (secrets never go in the code). The defaults
+already match the local setup, so the only thing you normally have to change is
+the LLM:
+
+```bash
+LLM_API_KEY=sk-...              # your provider key
+LLM_MODEL=gpt-4o-mini           # any model your provider exposes
+LLM_BASE_URL=                   # leave empty for OpenAI; set it for Groq/Gemini/vLLM
+```
+
+Provider examples:
+
+| Provider | `LLM_API_KEY` | `LLM_BASE_URL` | `LLM_MODEL` |
+|----------|---------------|----------------|-------------|
+| OpenAI | `sk-...` | *(empty)* | `gpt-4o-mini` |
+| Groq | `gsk_...` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| Gemini (OpenAI-compat) | `AIza...` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` |
+| Local vLLM | `anything` (non-empty) | `http://localhost:8001/v1` | whatever you served |
+
+Everything else in `.env` — `DATABASE_URL`, `REDIS_URL`, `QDRANT_PATH`,
+`CHUNK_SIZE`, `TOP_K` — has a working default. `QDRANT_URL` empty means
+"embedded on disk", which is what you want locally.
+
+### 3. Start PostgreSQL and Redis
+
+```bash
+./scripts/setup_local.sh
+```
+
+The script is idempotent — run it as often as you like. It creates a private
+PostgreSQL cluster in `~/.local/share/ida-postgres`, creates the `document_db`
+role and database, starts both services, and prints the URLs it used.
+
+You do **not** need to run a system-wide PostgreSQL or Redis; the script starts
+its own on the default ports (5432 / 6379).
+
+### 4. Create the schema
+
+```bash
+uv run alembic upgrade head
+```
+
+This creates the `documents` and `bookings` tables and the indexes. It is safe
+to re-run — Alembic tracks what has been applied.
+
+### 5. Start the API
+
+```bash
+uv run uvicorn app.main:app --reload
+```
+
+- API: <http://localhost:8000>
+- Interactive docs: <http://localhost:8000/docs>
+- OpenAPI schema: <http://localhost:8000/openapi.json`
+
+The first request that needs embeddings downloads the model
+(`sentence-transformers/all-MiniLM-L6-v2`, ~90 MB) into the HuggingFace cache.
+After that it is local.
+
+### 6. Try it
+
+**Ingest a document** — `.pdf` or `.txt`, up to 20 MB:
+
+```bash
+curl -F file=@machine_learning.pdf -F chunking_strategy=recursive \
+     http://localhost:8000/api/v1/documents/ingest
+```
+
+```json
+{
+  "document_id": "30ad1c7f-676f-4bac-9a40-81f5792f40a4",
+  "filename": "machine_learning.pdf",
+  "status": "completed",
+  "chunking_strategy": "recursive",
+  "total_chunks": 24,
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "embedding_dim": 384,
+  "duration_ms": 4210
+}
+```
+
+`chunking_strategy` is `recursive` (default) or `fixed_size`; `chunk_size` and
+`chunk_overlap` can be passed as extra form fields to override the defaults.
+Re-uploading the same file returns `409 Conflict` — duplicates are detected by
+content hash.
+
+**Ask a question:**
+
+```bash
+curl -X POST http://localhost:8000/api/v1/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"session_id": "demo", "message": "What is supervised learning?"}'
+```
+
+```json
+{
+  "session_id": "demo",
+  "answer": "Supervised learning is ...",
+  "sources": [
+    { "document_id": "…", "filename": "machine_learning.pdf", "chunk_index": 3, "score": 0.82 }
+  ],
+  "booking": null,
+  "context_used": true
+}
+```
+
+The same `session_id` keeps the conversation going — follow-up questions are
+rewritten into standalone ones before retrieval.
+
+**Book an interview** — same endpoint, no extra flag:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"session_id": "demo", "message": "I want to schedule an interview"}'
+```
+
+The assistant asks for name, email, date and time, one turn at a time, and
+writes the row to PostgreSQL only after you confirm.
+
+**List and delete documents:**
+
+```bash
+curl "http://localhost:8000/api/v1/documents?limit=10&status=completed"
+curl http://localhost:8000/api/v1/documents/<document_id>
+curl -X DELETE http://localhost:8000/api/v1/documents/<document_id>
+```
+
+### 7. Run the tests
 
 ```bash
 uv run pytest                    # unit tests — no network, no database
@@ -246,7 +385,37 @@ uv run pytest -m integration     # against the local PostgreSQL and Redis
 uv run pytest -m model           # downloads and runs the real embedding model
 ```
 
-The default run excludes the last two. The embedding model (~90 MB) is fetched from HuggingFace on first use and cached; the suite never needs it because the unit tests run against a fake model. It runs on the GPU when one is available and falls back to CPU otherwise.
+The default run excludes the last two. The embedding model (~90 MB) is fetched
+from HuggingFace on first use and cached; the suite never needs it because the
+unit tests run against a fake model. It runs on the GPU when one is available
+and falls back to CPU otherwise.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `502 "LLM_API_KEY is not configured"` | no key in `.env` | set `LLM_API_KEY` and `LLM_MODEL`; ingestion still works without them |
+| `connection refused` on `:5432` / `:6379` | services not running | `./scripts/setup_local.sh` |
+| `alembic.util.exc.CommandError` / missing tables | migrations not applied | `uv run alembic upgrade head` |
+| `409 Conflict` on upload | the same file was already ingested | duplicate detection is by content hash — upload different content, or `DELETE` the old document |
+| `500` "Storage folder ./qdrant_data is already accessed by another instance of Qdrant client" | a second app instance is running | embedded Qdrant takes a lock on its directory — stop the other process, or point `QDRANT_URL` at a Qdrant server |
+| `torch` download stalls | slow network | the model is fetched once and cached in `~/.cache/huggingface` |
+| Nothing is retrieved | the document was ingested but the question is out of scope | check `GET /api/v1/documents/<id>` — `status` must be `completed` |
+
+### Stopping and resetting
+
+```bash
+# stop the app: Ctrl-C in the terminal running uvicorn
+
+# stop the services
+pg_ctl -D ~/.local/share/ida-postgres stop
+redis-cli shutdown
+
+# wipe everything (schema, data, vectors) and start over
+rm -rf qdrant_data ~/.local/share/ida-postgres
+./scripts/setup_local.sh
+uv run alembic upgrade head
+```
 
 ## Design decisions
 
@@ -255,7 +424,7 @@ A few choices worth defending in a review:
 - **Chunkers are pure and synchronous.** No I/O, no globals, no config reads from inside them — so they are trivially testable and the strategy is chosen in exactly one place (the factory).
 - **Token counting is a whitespace estimate, not a model tokenizer.** It is approximate. A `ponytail:` comment in the code marks the ceiling and the upgrade path.
 - **Embedding model truncation is a real constraint.** `all-MiniLM-L6-v2` truncates at 256 word-pieces, so the default chunk size is 200 words, not the 500 you see in most tutorials. Chunks larger than that would be silently truncated and lose their tails.
-- **The embedding model loads lazily.** `torch` is a 2 GB dependency; importing it at startup would make boot slow and the test suite painful.
+- **The embedding model loads lazily.** `torch` and its CUDA wheels are a multi-gigabyte install; importing it at startup would make boot slow and the test suite painful.
 - **The booking check runs before retrieval.** It is cheap and unambiguous, and a booking request should not pull document context into its reply.
 - **Qdrant payloads carry the chunk text.** Retrieval never re-embeds; the trade-off is payload size, which is acceptable at this scale.
 - **The LLM retry policy is the SDK's.** It retries 429 and 5xx twice with backoff and never retries a 4xx; a second retry loop on top would only double the attempts and hide the behaviour.

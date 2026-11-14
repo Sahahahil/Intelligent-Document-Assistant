@@ -12,8 +12,9 @@ import logging
 from collections.abc import Sequence
 from datetime import datetime
 from functools import lru_cache
-from typing import Any, Literal, TypeVar
+from typing import Literal, TypeVar
 
+import httpx2
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, Omit
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -69,7 +70,13 @@ class LLMClient:
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
+        http_client: httpx2.AsyncClient | None = None,
     ) -> None:
+        """The client.
+
+        `http_client` is the seam the tests use: they pass one whose transport
+        is a mock, so the whole SDK stack runs without a network.
+        """
         settings = get_settings()
         self._api_key = settings.llm_api_key if api_key is None else api_key
         self._base_url = settings.llm_base_url if base_url is None else base_url
@@ -78,11 +85,8 @@ class LLMClient:
             api_key=self._api_key or _PLACEHOLDER_KEY,
             base_url=self._base_url or None,
             timeout=60.0,
+            http_client=http_client,
         )
-
-    @property
-    def model(self) -> str:
-        return self._model
 
     async def complete(
         self,
@@ -100,15 +104,20 @@ class LLMClient:
         )
         return content.strip()
 
-    async def complete_json(
+    async def complete_structured(
         self,
         *,
         messages: Sequence[ChatMessage],
+        schema: type[SchemaT],
         temperature: float = 0.0,
-    ) -> dict[str, Any]:
-        """The assistant's reply as a JSON object."""
+    ) -> SchemaT:
+        """The assistant's reply, validated against a Pydantic schema."""
+        hint = (
+            "Respond with a JSON object only, matching this schema exactly:\n"
+            f"{json.dumps(schema.model_json_schema())}"
+        )
         content = await self._request(
-            messages,
+            [*messages, ChatMessage(role="system", content=hint)],
             temperature=temperature,
             max_tokens=None,
             response_format=ResponseFormatJSONObject(type="json_object"),
@@ -123,24 +132,6 @@ class LLMClient:
             raise UpstreamError(
                 "LLM returned JSON that is not an object", details={"raw": content[:500]}
             )
-        return payload
-
-    async def complete_structured(
-        self,
-        *,
-        messages: Sequence[ChatMessage],
-        schema: type[SchemaT],
-        temperature: float = 0.0,
-    ) -> SchemaT:
-        """The assistant's reply, validated against a Pydantic schema."""
-        hint = (
-            "Respond with a JSON object only, matching this schema exactly:\n"
-            f"{json.dumps(schema.model_json_schema())}"
-        )
-        payload = await self.complete_json(
-            messages=[*messages, ChatMessage(role="system", content=hint)],
-            temperature=temperature,
-        )
         try:
             return schema.model_validate(payload)
         except ValidationError as exc:

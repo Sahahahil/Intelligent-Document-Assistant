@@ -19,6 +19,7 @@ from app.services.rag_service import (
     RAGService,
 )
 from app.services.retrieval_service import RetrievalService
+from tests.fakes import FakeLLM
 
 
 def make_chunk(
@@ -31,32 +32,6 @@ def make_chunk(
         chunk_index=index,
         score=0.9,
     )
-
-
-class FakeLLM:
-    """Records the messages it was given and returns a canned answer."""
-
-    def __init__(self, answer: str = "the answer") -> None:
-        self.answer = answer
-        self.calls: list[dict[str, object]] = []
-        self.error: Exception | None = None
-
-    async def complete(
-        self,
-        *,
-        messages: Sequence[ChatMessage],
-        temperature: float = 0.0,
-        max_tokens: int | None = None,
-    ) -> str:
-        self.calls.append({"messages": list(messages), "temperature": temperature})
-        if self.error is not None:
-            raise self.error
-        return self.answer
-
-    @property
-    def prompt(self) -> str:
-        messages = cast(list[ChatMessage], self.calls[0]["messages"])
-        return messages[-1].content
 
 
 class FakeRetrieval:
@@ -88,7 +63,7 @@ class FakeRewriter:
 
 @pytest.fixture
 def llm() -> FakeLLM:
-    return FakeLLM()
+    return FakeLLM("the answer")
 
 
 @pytest.fixture
@@ -124,7 +99,7 @@ async def test_the_prompt_carries_the_context_history_and_question(
         history=[ChatMessage(role="user", content="tell me about ML")],
     )
 
-    prompt = llm.prompt
+    prompt = llm.sent[-1].content
     assert chunk.content in prompt
     assert "user: tell me about ML" in prompt
     assert "Question: what is machine learning?" in prompt
@@ -137,7 +112,7 @@ async def test_the_context_is_numbered_with_the_file_and_chunk(
 
     await service.answer("what is machine learning?")
 
-    assert "[1] (machine_learning.pdf, chunk 2)" in llm.prompt
+    assert "[1] (machine_learning.pdf, chunk 2)" in llm.sent[-1].content
 
 
 async def test_without_context_the_model_is_told_there_is_none(
@@ -147,7 +122,7 @@ async def test_without_context_the_model_is_told_there_is_none(
 
     result = await service.answer("what is machine learning?")
 
-    assert NO_CONTEXT in llm.prompt
+    assert NO_CONTEXT in llm.sent[-1].content
     assert result.context_used is False
     assert result.sources == []
 
@@ -196,8 +171,8 @@ async def test_only_the_last_six_history_messages_reach_the_prompt(
 
     await service.answer("and now?", history=history)
 
-    assert f"message {50 - MAX_HISTORY_MESSAGES}" in llm.prompt
-    assert f"message {49 - MAX_HISTORY_MESSAGES}" not in llm.prompt
+    assert f"message {50 - MAX_HISTORY_MESSAGES}" in llm.sent[-1].content
+    assert f"message {49 - MAX_HISTORY_MESSAGES}" not in llm.sent[-1].content
 
 
 async def test_a_long_history_message_is_truncated(service: RAGService, llm: FakeLLM) -> None:
@@ -205,8 +180,8 @@ async def test_a_long_history_message_is_truncated(service: RAGService, llm: Fak
 
     await service.answer("and now?", history=history)
 
-    assert "x" * (MAX_MESSAGE_CHARS + 1) not in llm.prompt
-    assert "x" * MAX_MESSAGE_CHARS in llm.prompt
+    assert "x" * (MAX_MESSAGE_CHARS + 1) not in llm.sent[-1].content
+    assert "x" * MAX_MESSAGE_CHARS in llm.sent[-1].content
 
 
 async def test_the_context_is_capped_and_the_dropped_chunks_are_logged(
@@ -217,13 +192,17 @@ async def test_the_context_is_capped_and_the_dropped_chunks_are_logged(
     with caplog.at_level(logging.WARNING):
         result = await service.answer("what is machine learning?")
 
-    assert len(llm.prompt) < MAX_CONTEXT_CHARS + 2000
+    assert len(llm.sent[-1].content) < MAX_CONTEXT_CHARS + 2000
     assert len(result.sources) < 20
     assert "truncated" in caplog.text
 
 
-async def test_a_failing_llm_propagates(service: RAGService, llm: FakeLLM) -> None:
-    llm.error = UpstreamError("LLM error: 500")
+async def test_a_failing_llm_propagates(retrieval: FakeRetrieval) -> None:
+    llm = FakeLLM(UpstreamError("LLM error: 500"))
+    service = RAGService(
+        retrieval=cast(RetrievalService, retrieval),
+        llm=cast(LLMClient, llm),
+    )
 
     with pytest.raises(UpstreamError):
         await service.answer("what is machine learning?")
@@ -262,4 +241,4 @@ async def test_an_empty_chunk_is_skipped(
     result = await service.answer("what is machine learning?")
 
     assert len(result.sources) == 1
-    assert "[1] (" in llm.prompt
+    assert "[1] (" in llm.sent[-1].content

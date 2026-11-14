@@ -5,7 +5,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.integrations.llm import Role
 from app.schemas.booking import BookingModel
 
 # The session id becomes a Redis key, so it is kept to a safe charset.
@@ -38,18 +37,3 @@ class ChatResponse(BaseModel):
     booking: BookingModel | None = None
     context_used: bool = True
     created_at: datetime
-
-
-class SessionMessageModel(BaseModel):
-    """One stored message."""
-
-    role: Role
-    content: str
-    created_at: datetime | None = None
-
-
-class SessionHistoryResponse(BaseModel):
-    """A session's stored conversation."""
-
-    session_id: str
-    messages: list[SessionMessageModel] = Field(default_factory=list)

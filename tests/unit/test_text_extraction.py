@@ -39,39 +39,35 @@ def make_image_only_pdf() -> bytes:
 
 
 def test_plain_text_round_trips() -> None:
-    result = PlainTextExtractor().extract(b"hello world", filename="a.txt")
-    assert result.text == "hello world"
-    assert result.page_count is None
-    assert result.char_count == 11
+    assert PlainTextExtractor().extract(b"hello world", filename="a.txt") == "hello world"
 
 
 def test_crlf_is_normalised() -> None:
     result = PlainTextExtractor().extract(b"line1\r\nline2", filename="a.txt")
-    assert result.text == "line1\nline2"
-    assert "\r" not in result.text
+    assert result == "line1\nline2"
+    assert "\r" not in result
 
 
 def test_invalid_utf8_falls_back_to_latin1() -> None:
     result = PlainTextExtractor().extract(b"\xff\xfe invalid utf8", filename="a.txt")
-    assert "invalid utf8" in result.text
+    assert "invalid utf8" in result
 
 
 def test_utf8_bom_is_stripped() -> None:
     result = PlainTextExtractor().extract(b"\xef\xbb\xbfhello", filename="a.txt")
-    assert result.text == "hello"
+    assert result == "hello"
 
 
 def test_trailing_spaces_are_stripped_per_line() -> None:
     result = PlainTextExtractor().extract(b"a   \nb\t\n", filename="a.txt")
-    assert result.text == "a\nb\n"
+    assert result == "a\nb\n"
 
 
 def test_multipage_pdf_returns_every_page() -> None:
     data = make_pdf(["first page text", "second page text", "third page text"])
     result = PdfExtractor().extract(data, filename="a.pdf")
-    assert result.page_count == 3
     for phrase in ("first page text", "second page text", "third page text"):
-        assert phrase in result.text
+        assert phrase in result
 
 
 def test_pdf_paragraphs_and_pages_stay_separated() -> None:
@@ -86,7 +82,7 @@ def test_pdf_paragraphs_and_pages_stay_separated() -> None:
     doc.close()
 
     result = PdfExtractor().extract(data, filename="a.pdf")
-    assert result.text == "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+    assert result == "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
 
 
 def test_corrupt_pdf_raises_extraction_error() -> None:

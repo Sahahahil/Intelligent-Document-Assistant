@@ -2,7 +2,6 @@
 
 from datetime import date, datetime, time
 from enum import StrEnum
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -15,7 +14,6 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,7 +22,6 @@ from app.models.document import _enum_column
 
 
 class BookingStatus(StrEnum):
-    PENDING = "pending"
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
 
@@ -39,7 +36,7 @@ class Booking(Base):
     __tablename__ = "bookings"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'confirmed', 'cancelled')",
+            "status IN ('confirmed', 'cancelled')",
             name="ck_bookings_status",
         ),
         # No double-booking the same slot for the same person. Only confirmed
@@ -65,12 +62,8 @@ class Booking(Base):
     interview_time: Mapped[time] = mapped_column(Time, nullable=False)
 
     status: Mapped[BookingStatus] = mapped_column(
-        _enum_column(BookingStatus, 16), nullable=False, default=BookingStatus.PENDING
+        _enum_column(BookingStatus, 16), nullable=False, default=BookingStatus.CONFIRMED
     )
-    raw_payload: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
-    )
-
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

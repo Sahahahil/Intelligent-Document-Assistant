@@ -12,6 +12,7 @@ from qdrant_client import AsyncQdrantClient, models
 from app.chunking.base import DocumentChunk
 from app.core.exceptions import UpstreamError
 from app.integrations.qdrant import VectorStore
+from app.models.document import ChunkingStrategy
 
 pytestmark = pytest.mark.integration
 
@@ -32,19 +33,19 @@ def make_chunks(document_id: UUID, count: int) -> list[DocumentChunk]:
             chunk_index=index,
             document_id=document_id,
             token_count=6,
-            metadata={"strategy": "recursive", "start_char": 0, "end_char": 10},
+            strategy=ChunkingStrategy.RECURSIVE,
+            start_char=0,
+            end_char=10,
         )
         for index in range(count)
     ]
 
 
 @pytest.fixture
-async def store(tmp_path: Path) -> AsyncIterator[VectorStore]:
-    client = AsyncQdrantClient(path=str(tmp_path / "qdrant"))
-    vector_store = VectorStore(client, "documents", VECTOR_SIZE)
+async def store(qdrant_client: AsyncQdrantClient, collection: str) -> AsyncIterator[VectorStore]:
+    vector_store = VectorStore(qdrant_client, collection, VECTOR_SIZE)
     await vector_store.ensure_collection()
     yield vector_store
-    await client.close()
 
 
 async def test_ensure_collection_is_idempotent(store: VectorStore) -> None:
@@ -61,21 +62,20 @@ async def test_ensure_collection_is_idempotent(store: VectorStore) -> None:
     assert await store.count_document(document_id) == 2
 
 
-async def test_a_different_vector_size_is_reported(tmp_path: Path) -> None:
-    client = AsyncQdrantClient(path=str(tmp_path / "qdrant"))
-    await client.create_collection(
-        "documents",
+async def test_a_different_vector_size_is_reported(
+    qdrant_client: AsyncQdrantClient, collection: str
+) -> None:
+    await qdrant_client.create_collection(
+        collection,
         vectors_config=models.VectorParams(size=128, distance=models.Distance.COSINE),
     )
-    store = VectorStore(client, "documents", VECTOR_SIZE)
-    try:
-        with pytest.raises(UpstreamError) as excinfo:
-            await store.ensure_collection()
-        message = str(excinfo.value)
-        assert "128" in message
-        assert "384" in message
-    finally:
-        await client.close()
+    store = VectorStore(qdrant_client, collection, VECTOR_SIZE)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        await store.ensure_collection()
+    message = str(excinfo.value)
+    assert "128" in message
+    assert "384" in message
 
 
 async def test_upsert_writes_the_points(store: VectorStore) -> None:
@@ -185,9 +185,9 @@ async def test_deleting_an_unknown_document_is_a_no_op(store: VectorStore) -> No
     assert await store.count_document(uuid4()) == 0
 
 
-async def test_a_broken_client_raises_upstream_error(tmp_path: Path) -> None:
+async def test_a_broken_client_raises_upstream_error(tmp_path: Path, collection: str) -> None:
     client = AsyncQdrantClient(path=str(tmp_path / "qdrant"))
-    store = VectorStore(client, "documents", VECTOR_SIZE)
+    store = VectorStore(client, collection, VECTOR_SIZE)
     await client.close()
 
     with pytest.raises(UpstreamError):

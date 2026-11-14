@@ -1,72 +1,42 @@
 """Retrieval service tests — the vector store and the embedder are fakes."""
 
+import math
 from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 
+from app.chunking.base import DocumentChunk
 from app.core.config import get_settings
 from app.core.exceptions import UpstreamError, ValidationError
-from app.integrations.qdrant import RetrievedChunk, VectorStore
+from app.integrations.qdrant import VectorStore
+from app.models.document import ChunkingStrategy
 from app.services.embedding_service import EmbeddingService
-from app.services.retrieval_service import RetrievalService, SourceReference
+from app.services.retrieval_service import RetrievalService
+from tests.fakes import FakeEmbeddingService, FakeVectorStore
 
 DIMENSION = 8
+QUERY_VECTOR = [1.0] + [0.0] * (DIMENSION - 1)
 
 
-def make_chunk(document_id: UUID, index: int, score: float) -> RetrievedChunk:
-    return RetrievedChunk(
+def vector_at(cosine: float) -> list[float]:
+    """A unit vector whose cosine with the query vector is `cosine`."""
+    vector = [0.0] * DIMENSION
+    vector[0] = cosine
+    vector[1] = math.sqrt(1.0 - cosine * cosine)
+    return vector
+
+
+def make_chunk(document_id: UUID, index: int) -> DocumentChunk:
+    return DocumentChunk(
         content=f"chunk {index}",
-        document_id=document_id,
-        filename="notes.pdf",
         chunk_index=index,
-        score=score,
+        document_id=document_id,
+        token_count=2,
+        strategy=ChunkingStrategy.FIXED_SIZE,
+        start_char=0,
+        end_char=10,
     )
-
-
-class FakeVectorStore:
-    """Mimics the real store: descending score, filters, thresholds."""
-
-    def __init__(self, chunks: list[RetrievedChunk] | None = None) -> None:
-        self.chunks = chunks or []
-        self.calls: list[dict[str, object]] = []
-        self.error: Exception | None = None
-
-    async def search(
-        self,
-        vector: list[float],
-        *,
-        top_k: int,
-        document_ids: list[UUID] | None = None,
-        score_threshold: float | None = None,
-    ) -> list[RetrievedChunk]:
-        self.calls.append(
-            {
-                "vector": vector,
-                "top_k": top_k,
-                "document_ids": document_ids,
-                "score_threshold": score_threshold,
-            }
-        )
-        if self.error is not None:
-            raise self.error
-        results = self.chunks
-        if document_ids:
-            results = [chunk for chunk in results if chunk.document_id in document_ids]
-        if score_threshold is not None:
-            results = [chunk for chunk in results if chunk.score >= score_threshold]
-        return results[:top_k]
-
-
-class FakeEmbeddingService:
-    def __init__(self) -> None:
-        self.model_name = "fake-model"
-        self.dimension = DIMENSION
-        self.queries: list[str] = []
-
-    def embed_query(self, text: str) -> list[float]:
-        self.queries.append(text)
-        return [0.1] * DIMENSION
 
 
 @pytest.fixture
@@ -75,15 +45,21 @@ def document_id() -> UUID:
 
 
 @pytest.fixture
-def store(document_id: UUID) -> FakeVectorStore:
-    return FakeVectorStore(
-        [make_chunk(document_id, index, 0.9 - index * 0.1) for index in range(5)]
-    )
+def embedder() -> FakeEmbeddingService:
+    """Every query gives the same vector, so the ranking is predictable."""
+    return FakeEmbeddingService(dimension=DIMENSION, mapper=lambda _text: QUERY_VECTOR)
 
 
 @pytest.fixture
-def embedder() -> FakeEmbeddingService:
-    return FakeEmbeddingService()
+async def store(document_id: UUID) -> FakeVectorStore:
+    fake_store = FakeVectorStore()
+    await fake_store.upsert_chunks(
+        document_id=document_id,
+        filename="notes.pdf",
+        chunks=[make_chunk(document_id, index) for index in range(5)],
+        vectors=[vector_at(0.9 - index * 0.1) for index in range(5)],
+    )
+    return fake_store
 
 
 @pytest.fixture
@@ -120,21 +96,24 @@ async def test_the_query_is_embedded_by_the_injected_service(
     await service.retrieve("machine learning")
 
     assert embedder.queries == ["machine learning"]
-    assert store.calls[0]["vector"] == [0.1] * DIMENSION
+    assert store.calls[0]["vector"] == embedder.last_vector
 
 
 async def test_the_results_are_restricted_to_the_given_documents(
     service: RetrievalService, store: FakeVectorStore, document_id: UUID
 ) -> None:
     other = uuid4()
-    store.chunks = [
-        make_chunk(document_id, 0, 0.9),
-        make_chunk(other, 1, 0.8),
-    ]
+    await store.upsert_chunks(
+        document_id=other,
+        filename="other.pdf",
+        chunks=[make_chunk(other, 0)],
+        vectors=[vector_at(0.95)],
+    )
 
     results = await service.retrieve("machine learning", document_ids=[document_id])
 
-    assert [chunk.document_id for chunk in results] == [document_id]
+    assert results
+    assert all(chunk.document_id == document_id for chunk in results)
     assert store.calls[0]["document_ids"] == [document_id]
 
 
@@ -190,28 +169,7 @@ async def test_a_top_k_below_one_is_rejected(service: RetrievalService) -> None:
 async def test_a_failing_vector_store_propagates(
     service: RetrievalService, store: FakeVectorStore
 ) -> None:
-    store.error = UpstreamError("Qdrant error: connection refused")
+    store.search_error = UpstreamError("Qdrant error: connection refused")
 
     with pytest.raises(UpstreamError):
         await service.retrieve("machine learning")
-
-
-async def test_the_sources_carry_no_content(service: RetrievalService, document_id: UUID) -> None:
-    sources = await service.retrieve_sources("machine learning")
-
-    assert sources
-    assert all(isinstance(source, SourceReference) for source in sources)
-    assert sources[0].document_id == document_id
-    assert sources[0].filename == "notes.pdf"
-    assert sources[0].chunk_index == 0
-    assert not hasattr(sources[0], "content")
-
-
-async def test_the_scores_are_rounded_to_four_decimals(service: RetrievalService) -> None:
-    service_store = cast(FakeVectorStore, service._vector_store)
-    document_id = uuid4()
-    service_store.chunks = [make_chunk(document_id, 0, 0.123456789)]
-
-    sources = await service.retrieve_sources("machine learning")
-
-    assert sources[0].score == 0.1235

@@ -59,28 +59,3 @@ class RetrievalService:
         return await self._vector_store.search(
             vector, top_k=limit, document_ids=ids, score_threshold=threshold
         )
-
-    async def retrieve_sources(
-        self,
-        query: str,
-        *,
-        top_k: int | None = None,
-        document_ids: Sequence[UUID] | None = None,
-        score_threshold: float | None = None,
-    ) -> list[SourceReference]:
-        """The same results, reduced to what the API shows the user."""
-        chunks = await self.retrieve(
-            query,
-            top_k=top_k,
-            document_ids=document_ids,
-            score_threshold=score_threshold,
-        )
-        return [
-            SourceReference(
-                document_id=chunk.document_id,
-                filename=chunk.filename,
-                chunk_index=chunk.chunk_index,
-                score=round(chunk.score, 4),
-            )
-            for chunk in chunks
-        ]

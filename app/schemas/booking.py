@@ -22,11 +22,14 @@ class BookingExtraction(BaseModel):
     is_booking_request: bool = False
     fields: BookingFields = Field(default_factory=BookingFields)
     confirmed_by_user: bool = False
-    missing_fields: list[str] = Field(default_factory=list)
 
 
 class BookingModel(BaseModel):
-    """A booking, as the API returns it."""
+    """A booking, as the API returns it.
+
+    `pending` means a draft that is not stored yet - stored rows are only
+    ever confirmed or cancelled.
+    """
 
     id: UUID | None = None
     name: str | None = None

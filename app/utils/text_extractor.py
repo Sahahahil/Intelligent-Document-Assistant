@@ -1,16 +1,16 @@
-"""Plain-text extractor for .txt / .md / .text uploads."""
+"""Plain-text extractor for .txt uploads."""
 
-from app.utils.base import ExtractedText, build_result
+from app.utils.base import require_text
 
 
 class PlainTextExtractor:
     """Reads a text file as UTF-8, falling back to latin-1."""
 
-    def extract(self, data: bytes, *, filename: str) -> ExtractedText:
+    def extract(self, data: bytes, *, filename: str) -> str:
         text = self._decode(data)
         # Trailing spaces carry no meaning and only inflate the chunks.
         text = "\n".join(line.rstrip() for line in text.split("\n"))
-        return build_result(text, None, filename=filename)
+        return require_text(text, filename=filename)
 
     @staticmethod
     def _decode(data: bytes) -> str:

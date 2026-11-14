@@ -5,20 +5,21 @@ fakes through FastAPI's dependency overrides — this exercises the HTTP layer
 only.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import status
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
 from app.api.deps import get_document_repository, get_ingestion_service
 from app.core.exceptions import ConflictError, ValidationError
-from app.integrations.qdrant import StoredChunk, get_vector_store
+from app.integrations.qdrant import get_vector_store
 from app.main import app
 from app.models.document import ChunkingStrategy, Document, DocumentStatus
 from app.services.ingestion_service import IngestionResult
+from tests.fakes import FakeVectorStore
 
 
 def make_document(**overrides: object) -> Document:
@@ -83,21 +84,6 @@ class FakeIngestionService:
         )
 
 
-class FakeVectorStore:
-    def __init__(self) -> None:
-        self.deleted: list[UUID] = []
-        self.chunks: list[StoredChunk] = [
-            StoredChunk(chunk_index=0, content="first chunk", strategy="recursive"),
-            StoredChunk(chunk_index=1, content="second chunk", strategy="recursive"),
-        ]
-
-    async def list_chunks(self, document_id: UUID, *, limit: int = 20) -> list[StoredChunk]:
-        return self.chunks[:limit]
-
-    async def delete_document(self, document_id: UUID) -> None:
-        self.deleted.append(document_id)
-
-
 @pytest.fixture
 def repo() -> FakeDocumentRepository:
     return FakeDocumentRepository()
@@ -113,17 +99,16 @@ def store() -> FakeVectorStore:
     return FakeVectorStore()
 
 
-@pytest.fixture
-async def client(
+@pytest.fixture(autouse=True)
+def _overrides(
     repo: FakeDocumentRepository,
     service: FakeIngestionService,
     store: FakeVectorStore,
-) -> AsyncIterator[AsyncClient]:
+) -> Iterator[None]:
     app.dependency_overrides[get_document_repository] = lambda: repo
     app.dependency_overrides[get_ingestion_service] = lambda: service
     app.dependency_overrides[get_vector_store] = lambda: store
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
-        yield http
+    yield
     app.dependency_overrides.clear()
 
 
@@ -290,24 +275,6 @@ async def test_the_detail_is_returned(client: AsyncClient, repo: FakeDocumentRep
     assert body["id"] == str(document.id)
     assert body["file_hash"] == document.file_hash
     assert body["embedding_dim"] == 384
-
-
-async def test_the_chunks_are_previewed(client: AsyncClient, repo: FakeDocumentRepository) -> None:
-    document = make_document()
-    repo.documents = [document]
-
-    response = await client.get(f"/api/v1/documents/{document.id}/chunks")
-
-    assert response.status_code == status.HTTP_200_OK
-    body = response.json()
-    assert body["total_chunks"] == 3
-    assert body["items"][0]["content"] == "first chunk"
-
-
-async def test_chunks_of_an_unknown_document_is_a_404(client: AsyncClient) -> None:
-    response = await client.get(f"/api/v1/documents/{uuid4()}/chunks")
-
-    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 async def test_delete_removes_the_row_and_the_vectors(

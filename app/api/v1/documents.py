@@ -12,8 +12,6 @@ from app.integrations.qdrant import VectorStore, get_vector_store
 from app.models.document import ChunkingStrategy, DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.schemas.document import (
-    DocumentChunkPreview,
-    DocumentChunksResponse,
     DocumentDetail,
     DocumentIngestResponse,
     DocumentListResponse,
@@ -92,34 +90,6 @@ async def get_document(
     if document is None:
         raise NotFoundError(f"Document {document_id} not found")
     return DocumentDetail.model_validate(document)
-
-
-@router.get(
-    "/{document_id}/chunks",
-    response_model=DocumentChunksResponse,
-    summary="Preview the stored chunks",
-)
-async def get_document_chunks(
-    document_id: UUID,
-    document_repo: Annotated[DocumentRepository, Depends(get_document_repository)],
-    vector_store: Annotated[VectorStore, Depends(get_vector_store)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
-) -> DocumentChunksResponse:
-    """The first chunks of a document, as they were indexed."""
-    document = await document_repo.get(document_id)
-    if document is None:
-        raise NotFoundError(f"Document {document_id} not found")
-    chunks = await vector_store.list_chunks(document_id, limit=limit)
-    return DocumentChunksResponse(
-        document_id=document_id,
-        total_chunks=document.total_chunks,
-        items=[
-            DocumentChunkPreview(
-                chunk_index=chunk.chunk_index, content=chunk.content, strategy=chunk.strategy
-            )
-            for chunk in chunks
-        ],
-    )
 
 
 @router.delete(

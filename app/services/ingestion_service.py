@@ -228,9 +228,9 @@ class IngestionService:
     ) -> tuple[list[DocumentChunk], list[list[float]]]:
         """Extract, chunk and embed. Off the event loop — all three are CPU-bound."""
         extractor = get_extractor(extension)
-        extracted = await asyncio.to_thread(extractor.extract, data, filename=document.filename)
+        text = await asyncio.to_thread(extractor.extract, data, filename=document.filename)
         chunker = get_chunker(strategy, chunk_size=size, chunk_overlap=overlap)
-        chunks = await asyncio.to_thread(chunker.split, extracted.text, document_id=document.id)
+        chunks = await asyncio.to_thread(chunker.split, text, document_id=document.id)
         if not chunks:
             raise ExtractionError(f"'{document.filename}' produced no chunks")
         vectors = await asyncio.to_thread(

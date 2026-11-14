@@ -1,7 +1,6 @@
 """Query rewriter tests - the LLM is a fake."""
 
 import logging
-from collections.abc import Sequence
 from typing import cast
 
 import pytest
@@ -9,36 +8,12 @@ import pytest
 from app.core.exceptions import UpstreamError
 from app.integrations.llm import ChatMessage, LLMClient
 from app.services.query_rewriter import MAX_HISTORY_MESSAGES, QueryRewriter
-
-
-class FakeLLM:
-    """Records the messages it was given and returns a canned reply."""
-
-    def __init__(self, reply: str = "What are the advantages of supervised learning?") -> None:
-        self.reply = reply
-        self.calls: list[dict[str, object]] = []
-        self.error: Exception | None = None
-
-    async def complete(
-        self,
-        *,
-        messages: Sequence[ChatMessage],
-        temperature: float = 0.0,
-        max_tokens: int | None = None,
-    ) -> str:
-        self.calls.append({"messages": list(messages), "temperature": temperature})
-        if self.error is not None:
-            raise self.error
-        return self.reply
-
-    @property
-    def sent(self) -> list[ChatMessage]:
-        return cast(list[ChatMessage], self.calls[0]["messages"])
+from tests.fakes import FakeLLM
 
 
 @pytest.fixture
 def llm() -> FakeLLM:
-    return FakeLLM()
+    return FakeLLM("What are the advantages of supervised learning?")
 
 
 @pytest.fixture
@@ -69,7 +44,7 @@ async def test_a_follow_up_is_rewritten(
 
 
 async def test_the_quotes_are_stripped(llm: FakeLLM) -> None:
-    llm.reply = '"What are the advantages of supervised learning?"'
+    llm.queue('"What are the advantages of supervised learning?"')
     rewriter = QueryRewriter(cast(LLMClient, llm))
 
     result = await rewriter.rewrite("what about it?", [ChatMessage(role="user", content="hi")])
@@ -78,7 +53,7 @@ async def test_the_quotes_are_stripped(llm: FakeLLM) -> None:
 
 
 async def test_an_empty_reply_falls_back_to_the_message(llm: FakeLLM) -> None:
-    llm.reply = ""
+    llm.queue("")
     rewriter = QueryRewriter(cast(LLMClient, llm))
 
     result = await rewriter.rewrite("what about it?", [ChatMessage(role="user", content="hi")])
@@ -87,7 +62,7 @@ async def test_an_empty_reply_falls_back_to_the_message(llm: FakeLLM) -> None:
 
 
 async def test_a_too_long_reply_falls_back_to_the_message(llm: FakeLLM) -> None:
-    llm.reply = "x" * 700
+    llm.queue("x" * 700)
     rewriter = QueryRewriter(cast(LLMClient, llm))
 
     result = await rewriter.rewrite("what about it?", [ChatMessage(role="user", content="hi")])
@@ -98,7 +73,7 @@ async def test_a_too_long_reply_falls_back_to_the_message(llm: FakeLLM) -> None:
 async def test_a_failing_llm_falls_back_to_the_message(
     llm: FakeLLM, caplog: pytest.LogCaptureFixture
 ) -> None:
-    llm.error = UpstreamError("LLM error: 500")
+    llm.queue(UpstreamError("LLM error: 500"))
     rewriter = QueryRewriter(cast(LLMClient, llm))
 
     with caplog.at_level(logging.WARNING):
@@ -109,7 +84,7 @@ async def test_a_failing_llm_falls_back_to_the_message(
 
 
 async def test_a_whitespace_reply_falls_back_to_the_message(llm: FakeLLM) -> None:
-    llm.reply = "   \n  "
+    llm.queue("   \n  ")
     rewriter = QueryRewriter(cast(LLMClient, llm))
 
     result = await rewriter.rewrite("what about it?", [ChatMessage(role="user", content="hi")])
@@ -151,26 +126,6 @@ async def test_the_current_message_is_the_last_one_sent(
     assert llm.sent[-1].role == "user"
 
 
-async def test_an_empty_history_has_no_summary(rewriter: QueryRewriter, llm: FakeLLM) -> None:
-    assert await rewriter.summarize_conversation([]) == ""
-    assert llm.calls == []
-
-
-async def test_a_failing_summary_is_empty(llm: FakeLLM) -> None:
-    llm.error = UpstreamError("LLM error: 500")
-    rewriter = QueryRewriter(cast(LLMClient, llm))
-
-    assert await rewriter.summarize_conversation([ChatMessage(role="user", content="hi")]) == ""
-
-
-async def test_a_summary_is_produced(rewriter: QueryRewriter, llm: FakeLLM) -> None:
-    llm.reply = "The user likes Python."
-
-    summary = await rewriter.summarize_conversation([ChatMessage(role="user", content="hi")])
-
-    assert summary == "The user likes Python."
-
-
 async def test_a_history_of_only_assistant_messages_still_rewrites(
     rewriter: QueryRewriter, llm: FakeLLM
 ) -> None:
@@ -189,7 +144,7 @@ async def test_a_very_long_message_does_not_crash(rewriter: QueryRewriter) -> No
 
 
 async def test_only_the_first_line_of_a_multi_line_reply_is_used(llm: FakeLLM) -> None:
-    llm.reply = "What is supervised learning?\nLet me know if you need more."
+    llm.queue("What is supervised learning?\nLet me know if you need more.")
     rewriter = QueryRewriter(cast(LLMClient, llm))
 
     result = await rewriter.rewrite("what about it?", [ChatMessage(role="user", content="hi")])

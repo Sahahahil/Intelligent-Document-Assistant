@@ -12,7 +12,6 @@ from uuid import UUID
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.chunking.base import DocumentChunk
 from app.core.exceptions import (
     ConflictError,
     ExtractionError,
@@ -25,6 +24,7 @@ from app.models.document import Document, DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.services.embedding_service import EmbeddingService
 from app.services.ingestion_service import IngestionResult, IngestionService
+from tests.fakes import FakeEmbeddingService, FakeVectorStore
 
 TEXT = ("Machine learning is a field of study. " * 60).encode()
 DIMENSION = 384
@@ -66,49 +66,6 @@ class FakeDocumentRepository:
         return self.documents.pop(document_id, None) is not None
 
 
-class FakeVectorStore:
-    def __init__(self) -> None:
-        self.upserts: list[tuple[UUID, list[DocumentChunk], dict[str, object]]] = []
-        self.deleted: list[UUID] = []
-        self.upsert_error: Exception | None = None
-
-    async def ensure_collection(self) -> None:
-        return None
-
-    async def upsert_chunks(
-        self,
-        *,
-        document_id: UUID,
-        filename: str,
-        chunks: list[DocumentChunk],
-        vectors: list[list[float]],
-        extra: dict[str, object] | None = None,
-    ) -> int:
-        if self.upsert_error is not None:
-            raise self.upsert_error
-        self.upserts.append((document_id, chunks, extra or {}))
-        return len(chunks)
-
-    async def delete_document(self, document_id: UUID) -> None:
-        self.deleted.append(document_id)
-
-
-class FakeEmbeddingService:
-    model_name = "fake-model"
-    dimension = DIMENSION
-
-    def __init__(self) -> None:
-        self.error: Exception | None = None
-
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        if self.error is not None:
-            raise self.error
-        return [[0.1] * DIMENSION for _ in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        return [0.1] * DIMENSION
-
-
 class Boom(RuntimeError):
     pass
 
@@ -125,7 +82,7 @@ def store() -> FakeVectorStore:
 
 @pytest.fixture
 def embedder() -> FakeEmbeddingService:
-    return FakeEmbeddingService()
+    return FakeEmbeddingService(dimension=DIMENSION)
 
 
 @pytest.fixture

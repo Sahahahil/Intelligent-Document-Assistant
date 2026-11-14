@@ -8,6 +8,7 @@ from uuid import UUID
 import pytest
 
 from app.chunking import DocumentChunk, FixedSizeChunker, RecursiveCharacterChunker
+from app.models.document import ChunkingStrategy
 
 DOC_ID = UUID("00000000-0000-0000-0000-000000000002")
 
@@ -139,10 +140,8 @@ def test_metadata_reports_the_strategy_and_offsets() -> None:
     )
 
     for chunk in chunks:
-        assert chunk.metadata["strategy"] == "recursive"
-        start = chunk.metadata["start_char"]
-        end = chunk.metadata["end_char"]
-        assert text[start:end].strip() == chunk.content
+        assert chunk.strategy == ChunkingStrategy.RECURSIVE
+        assert text[chunk.start_char : chunk.end_char].strip() == chunk.content
 
 
 def test_whitespace_only_chunks_are_dropped() -> None:

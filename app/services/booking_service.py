@@ -117,7 +117,6 @@ class BookingExtractor:
                 "Dropping an interview date in the past: %s", extraction.fields.interview_date
             )
             extraction.fields.interview_date = None
-        extraction.missing_fields = missing_fields(extraction.fields)
         return extraction
 
 
@@ -250,7 +249,6 @@ class BookingService:
             interview_date=fields.interview_date,
             interview_time=fields.interview_time,
             status=BookingStatus.CONFIRMED,
-            raw_payload=fields.model_dump(mode="json"),
         )
         try:
             return await self._repo.create(booking), True

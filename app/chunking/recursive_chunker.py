@@ -47,11 +47,9 @@ class RecursiveCharacterChunker:
                     chunk_index=len(chunks),
                     document_id=document_id,
                     token_count=count_tokens(content),
-                    metadata={
-                        "strategy": self.strategy.value,
-                        "start_char": start_char,
-                        "end_char": end_char,
-                    },
+                    strategy=self.strategy,
+                    start_char=start_char,
+                    end_char=end_char,
                 )
             )
         return chunks
