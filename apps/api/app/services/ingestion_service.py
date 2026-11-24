@@ -3,19 +3,22 @@
 PostgreSQL and Qdrant cannot share a transaction, so the two stores are kept
 consistent by compensation: if a step fails, the document row is marked
 `failed` and any vectors already written are deleted.
+
+The pipeline runs in the background: the request that carried the file returns
+as soon as the row exists, and the progress is published to Redis for the
+status stream to read.
 """
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
-import time
-from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+from redis.asyncio import Redis
 from sqlalchemy.exc import IntegrityError
 
-from app.chunking.base import DocumentChunk
 from app.chunking.factory import get_chunker
 from app.core.config import Settings, get_settings
 from app.core.exceptions import (
@@ -36,19 +39,36 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = frozenset({"pdf", "txt"})
 _ERROR_LIMIT = 1000
 
+# How far along the pipeline is, as a percentage, at each stage.
+STAGE_PROGRESS = {
+    "extracting": 10,
+    "chunking": 35,
+    "embedding": 70,
+    "indexing": 90,
+    "completed": 100,
+    "failed": 100,
+}
 
-@dataclass(frozen=True, slots=True)
-class IngestionResult:
-    """What the caller gets back after a successful ingest."""
+_PROGRESS_TTL_SECONDS = 3600
 
-    document_id: UUID
-    filename: str
-    status: DocumentStatus
-    chunking_strategy: ChunkingStrategy
-    total_chunks: int
-    embedding_model: str
-    embedding_dim: int
-    duration_ms: int
+# Tasks are kept referenced here: an asyncio task with no reference can be
+# garbage collected before it finishes.
+_RUNNING: set[asyncio.Task] = set()
+
+
+def progress_key(document_id: UUID) -> str:
+    """Where the progress of one ingestion is published."""
+    return f"ingest:{document_id}"
+
+
+def _spawn(coro) -> None:
+    """Run a coroutine in the background, and keep it alive."""
+    task = asyncio.create_task(coro)
+    _RUNNING.add(task)
+    task.add_done_callback(_RUNNING.discard)
+
+
+
 
 
 def _validate_upload(filename: str, data: bytes, settings: Settings) -> tuple[str, str]:
@@ -104,12 +124,14 @@ class IngestionService:
         document_repo: DocumentRepository,
         vector_store: VectorStore,
         embedding_service: EmbeddingService,
+        redis: Redis,
     ) -> None:
         self._document_repo = document_repo
         self._vector_store = vector_store
         self._embedding_service = embedding_service
+        self._redis = redis
 
-    async def ingest(
+    async def start(
         self,
         *,
         filename: str,
@@ -118,8 +140,12 @@ class IngestionService:
         chunking_strategy: ChunkingStrategy | str,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
-    ) -> IngestionResult:
-        started = time.perf_counter()
+    ) -> Document:
+        """Create the document row and start the pipeline in the background.
+
+        The row exists as soon as this returns, so the caller can show the
+        document immediately and follow its progress.
+        """
         settings = get_settings()
         name, extension = _validate_upload(filename, data, settings)
         strategy = _parse_strategy(chunking_strategy)
@@ -139,41 +165,110 @@ class IngestionService:
             overlap=overlap,
         )
 
-        try:
-            chunks, vectors = await self._build_chunks(
-                document, data, extension, strategy, size, overlap
-            )
-            await self._vector_store.ensure_collection()
-            await self._vector_store.upsert_chunks(
-                document_id=document.id,
-                filename=name,
-                chunks=chunks,
-                vectors=vectors,
-                extra={
-                    "chunking_strategy": strategy.value,
-                    "chunk_size": size,
-                    "chunk_overlap": overlap,
-                    "embedding_model": self._embedding_service.model_name,
-                },
-            )
-            await self._document_repo.update_status(
-                document.id, DocumentStatus.COMPLETED, total_chunks=len(chunks)
-            )
-        except Exception as exc:
-            await self._compensate(document.id, exc)
-            raise
-
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return IngestionResult(
-            document_id=document.id,
-            filename=name,
-            status=DocumentStatus.COMPLETED,
-            chunking_strategy=strategy,
-            total_chunks=len(chunks),
-            embedding_model=self._embedding_service.model_name,
-            embedding_dim=self._embedding_service.dimension,
-            duration_ms=max(1, elapsed_ms),
+        _spawn(
+            self._process(document, data, extension, strategy, size, overlap)
         )
+        return document
+
+    async def _process(
+        self,
+        document: Document,
+        data: bytes,
+        extension: str,
+        strategy: ChunkingStrategy,
+        size: int,
+        overlap: int,
+    ) -> None:
+        """Run the pipeline, publishing the stage as it goes.
+
+        It opens its own session: the request that started it is long gone.
+        """
+        from app.db.session import AsyncSessionLocal
+        from app.repositories.document_repository import DocumentRepository
+
+        async with AsyncSessionLocal() as session:
+            repo = DocumentRepository(session)
+            try:
+                extractor = get_extractor(extension)
+                await self._publish(document.id, "extracting")
+                text = await asyncio.to_thread(
+                    extractor.extract, data, filename=document.filename
+                )
+
+                await self._publish(document.id, "chunking")
+                chunker = get_chunker(strategy, chunk_size=size, chunk_overlap=overlap)
+                chunks = await asyncio.to_thread(
+                    chunker.split, text, document_id=document.id
+                )
+                if not chunks:
+                    raise ExtractionError(
+                        f"'{document.filename}' produced no chunks"
+                    )
+
+                await self._publish(document.id, "embedding", total_chunks=len(chunks))
+                vectors = await asyncio.to_thread(
+                    self._embedding_service.embed_texts,
+                    [chunk.content for chunk in chunks],
+                )
+
+                await self._publish(document.id, "indexing", total_chunks=len(chunks))
+                await self._vector_store.ensure_collection()
+                await self._vector_store.upsert_chunks(
+                    document_id=document.id,
+                    filename=document.filename,
+                    chunks=chunks,
+                    vectors=vectors,
+                    extra={
+                        "chunking_strategy": strategy.value,
+                        "chunk_size": size,
+                        "chunk_overlap": overlap,
+                        "embedding_model": self._embedding_service.model_name,
+                    },
+                )
+                await repo.update_status(
+                    document.id, DocumentStatus.COMPLETED, total_chunks=len(chunks)
+                )
+                await self._publish(
+                    document.id, "completed", total_chunks=len(chunks)
+                )
+            except Exception as exc:
+                await self._compensate(repo, document.id, exc)
+                await self._publish(document.id, "failed", error=str(exc)[:_ERROR_LIMIT])
+
+    async def _publish(
+        self,
+        document_id: UUID,
+        stage: str,
+        *,
+        total_chunks: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Tell the status stream where the pipeline has got to."""
+        payload: dict[str, object] = {
+            "stage": stage,
+            "progress": STAGE_PROGRESS.get(stage, 0),
+        }
+        if total_chunks is not None:
+            payload["total_chunks"] = total_chunks
+        if error is not None:
+            payload["error"] = error
+        try:
+            await self._redis.set(
+                progress_key(document_id),
+                json.dumps(payload),
+                ex=_PROGRESS_TTL_SECONDS,
+            )
+        except Exception:
+            # The progress is a convenience; the row still records the truth.
+            logger.warning("Could not publish ingest progress", exc_info=True)
+
+    async def get_progress(self, document_id: UUID) -> dict[str, object] | None:
+        """The last published progress for one document, if there is one."""
+        raw = await self._redis.get(progress_key(document_id))
+        if not raw:
+            return None
+        return json.loads(raw)
+
 
     async def _clear_previous_attempt(self, file_hash: str) -> None:
         """Refuse a duplicate; let a previously failed file be retried."""
@@ -219,35 +314,16 @@ class IngestionService:
             # this write. The session needs a rollback, which the caller does.
             raise ConflictError("Document already ingested") from exc
 
-    async def _build_chunks(
-        self,
-        document: Document,
-        data: bytes,
-        extension: str,
-        strategy: ChunkingStrategy,
-        size: int,
-        overlap: int,
-    ) -> tuple[list[DocumentChunk], list[list[float]]]:
-        """Extract, chunk and embed. Off the event loop — all three are CPU-bound."""
-        extractor = get_extractor(extension)
-        text = await asyncio.to_thread(extractor.extract, data, filename=document.filename)
-        chunker = get_chunker(strategy, chunk_size=size, chunk_overlap=overlap)
-        chunks = await asyncio.to_thread(chunker.split, text, document_id=document.id)
-        if not chunks:
-            raise ExtractionError(f"'{document.filename}' produced no chunks")
-        vectors = await asyncio.to_thread(
-            self._embedding_service.embed_texts, [chunk.content for chunk in chunks]
-        )
-        return chunks, vectors
-
-    async def _compensate(self, document_id: UUID, exc: Exception) -> None:
+    async def _compensate(
+        self, repo: DocumentRepository, document_id: UUID, exc: Exception
+    ) -> None:
         """Mark the row failed and drop any vectors that reached Qdrant."""
         try:
             await self._vector_store.delete_document(document_id)
         except Exception:
             logger.exception("Could not clean up vectors for document %s", document_id)
         try:
-            await self._document_repo.update_status(
+            await repo.update_status(
                 document_id,
                 DocumentStatus.FAILED,
                 error_message=str(exc)[:_ERROR_LIMIT],

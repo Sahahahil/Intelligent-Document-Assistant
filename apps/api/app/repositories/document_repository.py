@@ -35,12 +35,17 @@ class DocumentRepository:
         limit: int = 20,
         offset: int = 0,
         status: DocumentStatus | None = None,
+        search: str | None = None,
     ) -> tuple[list[Document], int]:
         rows_stmt = select(Document)
         count_stmt = select(func.count()).select_from(Document)
         if status is not None:
             rows_stmt = rows_stmt.where(Document.status == status)
             count_stmt = count_stmt.where(Document.status == status)
+        if search:
+            pattern = f"%{search.strip()}%"
+            rows_stmt = rows_stmt.where(Document.filename.ilike(pattern))
+            count_stmt = count_stmt.where(Document.filename.ilike(pattern))
 
         total = (await self._session.execute(count_stmt)).scalar_one()
         rows = (

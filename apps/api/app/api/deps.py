@@ -39,6 +39,7 @@ def get_ingestion_service(
         document_repo=document_repo,
         vector_store=get_vector_store(),
         embedding_service=get_embedding_service(),
+        redis=get_redis_client(),
     )
 
 

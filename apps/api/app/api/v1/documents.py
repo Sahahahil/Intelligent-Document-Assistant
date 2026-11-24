@@ -29,8 +29,8 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 @router.post(
     "/ingest",
     response_model=DocumentIngestResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Upload and process a document",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload a document and index it in the background",
 )
 async def ingest_document(
     file: Annotated[UploadFile, File(description="PDF or TXT document")],
@@ -46,7 +46,11 @@ async def ingest_document(
         Form(description="Words shared by neighbouring chunks. 0 or empty uses CHUNK_OVERLAP"),
     ] = None,
 ) -> DocumentIngestResponse:
-    """Run an uploaded document through the ingestion pipeline."""
+    """Accept an uploaded document and start indexing it.
+
+    The row is written before this returns, so the document can be listed and
+    followed while it is still being chunked and embedded.
+    """
     settings = get_settings()
     # The upload is spooled to disk by the multipart parser, so the size is
     # known before the bytes are copied into memory.
@@ -54,7 +58,7 @@ async def ingest_document(
         raise PayloadTooLargeError(f"File is larger than {settings.max_upload_mb} MB")
 
     data = await file.read()
-    result = await service.ingest(
+    document = await service.start(
         filename=file.filename or "upload",
         content_type=file.content_type or "application/octet-stream",
         data=data,
@@ -63,14 +67,14 @@ async def ingest_document(
         chunk_overlap=chunk_overlap,
     )
     return DocumentIngestResponse(
-        document_id=result.document_id,
-        filename=result.filename,
-        status=result.status,
-        chunking_strategy=result.chunking_strategy,
-        total_chunks=result.total_chunks,
-        embedding_model=result.embedding_model,
-        embedding_dim=result.embedding_dim,
-        duration_ms=result.duration_ms,
+        document_id=document.id,
+        filename=document.filename,
+        status=document.status,
+        chunking_strategy=document.chunking_strategy,
+        total_chunks=document.total_chunks,
+        embedding_model=document.embedding_model,
+        embedding_dim=document.embedding_dim,
+        duration_ms=0,
     )
 
 
@@ -80,9 +84,12 @@ async def list_documents(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
     document_status: Annotated[DocumentStatus | None, Query(alias="status")] = None,
+    search: Annotated[str | None, Query(description="Match part of the filename")] = None,
 ) -> DocumentListResponse:
     """A page of documents, newest first."""
-    rows, total = await document_repo.list(limit=limit, offset=offset, status=document_status)
+    rows, total = await document_repo.list(
+        limit=limit, offset=offset, status=document_status, search=search
+    )
     return DocumentListResponse(
         items=[DocumentSummary.model_validate(row) for row in rows],
         total=total,
@@ -126,6 +133,7 @@ async def delete_document(
 async def document_status_stream(
     document_id: UUID,
     document_repo: Annotated[DocumentRepository, Depends(get_document_repository)],
+    service: Annotated[IngestionService, Depends(get_ingestion_service)],
 ) -> EventSourceResponse:
     """Stream document processing status via Server-Sent Events."""
 
@@ -136,16 +144,22 @@ async def document_status_stream(
                 yield {"data": json.dumps({"stage": "error", "progress": 0, "error": "Not found"})}
                 break
 
-            stage_map = {
-                DocumentStatus.PROCESSING: "processing",
-                DocumentStatus.COMPLETED: "completed",
-                DocumentStatus.FAILED: "failed",
-            }
-            yield {"data": json.dumps({
-                "stage": stage_map[doc.status],
-                "progress": 100 if doc.status != DocumentStatus.PROCESSING else 50,
-                "total_chunks": doc.total_chunks,
-            })}
+            # The pipeline publishes the stage it has reached; the row is the
+            # fallback for a document whose progress has already expired.
+            published = await service.get_progress(document_id)
+            if published is not None:
+                yield {"data": json.dumps(published)}
+            else:
+                stage_map = {
+                    DocumentStatus.PROCESSING: "processing",
+                    DocumentStatus.COMPLETED: "completed",
+                    DocumentStatus.FAILED: "failed",
+                }
+                yield {"data": json.dumps({
+                    "stage": stage_map[doc.status],
+                    "progress": 100 if doc.status != DocumentStatus.PROCESSING else 50,
+                    "total_chunks": doc.total_chunks,
+                })}
 
             if doc.status != DocumentStatus.PROCESSING:
                 break
