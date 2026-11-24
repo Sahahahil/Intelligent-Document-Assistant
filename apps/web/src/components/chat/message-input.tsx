@@ -1,9 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, Mic } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
+import { useEffect, useRef, useState } from 'react';
 
 interface MessageInputProps {
   onSend: (message: string) => void;
@@ -11,7 +8,11 @@ interface MessageInputProps {
   placeholder?: string;
 }
 
-export function MessageInput({ onSend, disabled = false, placeholder = 'Ask a question...' }: MessageInputProps) {
+export function MessageInput({
+  onSend,
+  disabled = false,
+  placeholder = 'Ask about your documents',
+}: MessageInputProps) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -19,53 +20,36 @@ export function MessageInput({ onSend, disabled = false, placeholder = 'Ask a qu
     textareaRef.current?.focus();
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (value.trim() && !disabled) {
-      onSend(value.trim());
-      setValue('');
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit(e);
-    }
+  const send = () => {
+    const text = value.trim();
+    if (!text || disabled) return;
+    onSend(text);
+    setValue('');
   };
 
   return (
-    <form onSubmit={handleSubmit} className="border-t p-4">
-      <div className="flex items-end gap-2">
-        <div className="flex-1 relative">
-          <Textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            disabled={disabled}
-            className="min-h-[44px] max-h-[200px] resize-none pr-12"
-            rows={1}
-          />
-          <div className="absolute bottom-2 right-2 flex items-center gap-1">
-            <Button variant="ghost" size="icon" disabled>
-              <Paperclip className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="icon" disabled>
-              <Mic className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-        <Button
-          type="submit"
-          disabled={!value.trim() || disabled}
-          size="icon"
-          className="h-10 w-10"
-        >
-          <Send className="h-4 w-4" />
-        </Button>
+    <div className="px-8 pb-[22px] pt-3.5">
+      <div className="mx-auto flex max-w-[720px] items-end gap-2.5 rounded-[14px] border border-line bg-card py-2 pl-3.5 pr-2">
+        <textarea
+          ref={textareaRef}
+          rows={1}
+          value={value}
+          placeholder={placeholder}
+          aria-label="Message"
+          disabled={disabled}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          className="max-h-[140px] flex-1 resize-none bg-transparent py-1.5 text-[15px] leading-[1.55] outline-none placeholder:text-muted-foreground"
+        />
+        <button type="button" className="btn" onClick={send} disabled={disabled || !value.trim()}>
+          Send
+        </button>
       </div>
-    </form>
+    </div>
   );
 }
