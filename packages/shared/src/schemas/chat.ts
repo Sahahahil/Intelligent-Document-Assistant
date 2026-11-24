@@ -12,24 +12,24 @@ export const SourceSchema = z.object({
   filename: z.string(),
   chunk_index: z.number().int(),
   score: z.number().min(0).max(1),
-  content: z.string(),
 });
 
 export const BookingModelSchema = z.object({
-  id: UUIDSchema,
-  name: z.string(),
-  email: z.string().email(),
-  date: z.string().datetime(),
-  time: z.string(),
-  status: z.enum(['draft', 'confirmed', 'cancelled']),
-  created_at: z.string().datetime(),
-}).nullable();
+  id: UUIDSchema.nullable(),
+  name: z.string().nullable(),
+  email: z.string().email().nullable(),
+  interview_date: z.string().date().nullable(),
+  interview_time: z.string().nullable(),
+  status: z.enum(['pending', 'confirmed', 'cancelled']),
+  missing_fields: z.array(z.string()),
+  awaiting_confirmation: z.boolean(),
+});
 
 export const ChatResponseSchema = z.object({
   session_id: z.string(),
   answer: z.string(),
   sources: z.array(SourceSchema),
-  booking: BookingModelSchema,
+  booking: BookingModelSchema.nullable(),
   context_used: z.boolean(),
   created_at: z.string().datetime(),
 });
@@ -37,15 +37,11 @@ export const ChatResponseSchema = z.object({
 export const ChatStreamEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('token'), content: z.string() }),
   z.object({ type: z.literal('sources'), sources: z.array(SourceSchema) }),
-  z.object({ type: z.literal('booking'), booking: z.object({
-    id: UUIDSchema,
-    name: z.string(),
-    email: z.string().email(),
-    date: z.string().datetime(),
-    time: z.string(),
-    status: z.string(),
-    created_at: z.string().datetime(),
-  }) }),
+  z.object({
+    type: z.literal('booking'),
+    reply: z.string().nullable(),
+    booking: BookingModelSchema.nullable(),
+  }),
   z.object({ type: z.literal('error'), message: z.string() }),
   z.object({ type: z.literal('done') }),
 ]);

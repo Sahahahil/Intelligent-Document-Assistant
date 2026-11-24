@@ -25,36 +25,28 @@ export const DocumentIngestResponseSchema = z.object({
 export const DocumentSummarySchema = z.object({
   id: UUIDSchema,
   filename: z.string(),
-  status: DocumentStatusEnum,
+  file_extension: z.string(),
+  file_size: z.number().int(),
   chunking_strategy: ChunkingStrategyEnum,
   total_chunks: z.number().int(),
+  embedding_model: z.string(),
+  status: DocumentStatusEnum,
   created_at: z.string().datetime(),
 });
 
 export const DocumentChunkSchema = z.object({
-  id: UUIDSchema,
   document_id: UUIDSchema,
   chunk_index: z.number().int(),
   content: z.string(),
-  token_count: z.number().int(),
-  embedding: z.array(z.number()).optional(),
-  metadata: z.record(z.unknown()).optional(),
-  score: z.number().optional(),
 });
 
-export const DocumentDetailSchema = z.object({
-  id: UUIDSchema,
-  filename: z.string(),
-  status: DocumentStatusEnum,
-  chunking_strategy: ChunkingStrategyEnum,
-  total_chunks: z.number().int(),
-  embedding_model: z.string(),
+export const DocumentDetailSchema = DocumentSummarySchema.extend({
+  content_type: z.string(),
+  file_hash: z.string(),
+  chunk_size: z.number().int(),
+  chunk_overlap: z.number().int(),
   embedding_dim: z.number().int(),
-  created_at: z.string().datetime(),
-  completed_at: z.string().datetime().nullable(),
   error_message: z.string().nullable(),
-  duration_ms: z.number().int().optional(),
-  chunks: z.array(DocumentChunkSchema),
 });
 
 export const DocumentListParamsSchema = PaginationParamsSchema.extend({
@@ -67,7 +59,15 @@ export const DocumentListResponseSchema = PaginationResponseSchema.extend({
 });
 
 export const DocumentStatusEventSchema = z.object({
-  stage: z.enum(['extracting', 'chunking', 'embedding', 'completed', 'failed']),
+  stage: z.enum([
+    'extracting',
+    'chunking',
+    'embedding',
+    'indexing',
+    'processing',
+    'completed',
+    'failed',
+  ]),
   progress: z.number().int().min(0).max(100),
   total_chunks: z.number().int().optional(),
   error: z.string().optional(),
