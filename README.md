@@ -1,196 +1,210 @@
 # Intelligent Document Assistant
 
-A full-stack RAG-powered document assistant with chat, document management, and interview booking capabilities.
+A full-stack RAG document assistant: upload your files, ask questions and get
+answers cited back to the chunks they came from, then book an interview without
+leaving the app.
+
+The interface follows the design in
+[`docs/Intelligent Document Assistant.html`](docs/Intelligent%20Document%20Assistant.html)
+— a chat with sessions, a document library with live indexing progress, and a
+four-step booking wizard.
 
 ## Features
 
-- **Document Management**: Upload PDF/TXT documents, automatic chunking, embedding, and vector storage
-- **RAG Chat**: Streaming conversational AI with source citations
-- **Interview Booking**: Step-by-step booking wizard with calendar view
-- **Document Processing**: PDF text extraction, recursive/fixed-size chunking, vector embeddings
-- **Multi-session Chat**: Persistent conversation history with Redis
+- **Document library** — drag-and-drop PDF/TXT upload, background extraction →
+  chunking → embedding → indexing, with a live progress bar per file
+- **RAG chat** — streamed answers over SSE, with the source chunks shown under
+  the answer; conversation history per session in Redis
+- **Interview booking** — a wizard (date → time → details → confirm) that
+  refuses slots already taken, plus a list of upcoming interviews
+- **Booking through chat** — the assistant recognises a booking request,
+  collects the details and only writes a row after the user confirms
+- **Light and dark themes**, responsive down to a phone
 
 ## Tech Stack
 
 ### Backend (apps/api)
-- **FastAPI** - Modern Python web framework
-- **PostgreSQL** - Primary database (async with SQLAlchemy)
-- **Redis** - Conversation memory & session storage
-- **Qdrant** - Vector database for embeddings
-- **Alembic** - Database migrations
+
+- **FastAPI** + Pydantic v2, `httpx`/`openai` for any OpenAI-compatible LLM
+- **PostgreSQL** (async SQLAlchemy) for documents and bookings
+- **Redis** for conversation memory and booking drafts
+- **Qdrant** for the vectors (embedded on disk by default, or a server)
+- **Alembic** for migrations, **sentence-transformers** for embeddings
 
 ### Frontend (apps/web)
-- **Next.js 16** - React framework with App Router
-- **Tailwind CSS 4** - Utility-first styling
-- **TanStack Query** - Server state management
-- **NextAuth.js** - Authentication (Credentials, GitHub, Google)
-- **shadcn/ui** - Accessible component library
-- **react-day-picker** - Date selection
-- **react-markdown** - Markdown rendering
+
+- **Next.js 16** App Router, React 19, TypeScript
+- **Tailwind CSS 4** with the palette from the design as CSS variables
+- **TanStack Query** for server state
+- **NextAuth.js**, **shadcn/ui**, **lucide-react**
 
 ### Shared (packages/shared)
-- **Zod schemas** - Type-safe API contracts (mirroring Pydantic)
-- **Type-safe API client** - SSE streaming support
+
+- **Zod schemas** mirroring the Pydantic models — one contract for both sides
+- **API client** with SSE streaming, used by the app and covered by unit tests
 
 ### Infrastructure
-- **Nx Monorepo** - Unified build system
-- **Docker Compose** - Local development & production
-- **GitHub Actions** - CI/CD pipeline
-- **Playwright** - E2E testing
+
+- **Nx monorepo** (npm workspaces), **Docker Compose**, **GitHub Actions**,
+  **Playwright** for E2E
 
 ## Quick Start
 
-### Prerequisites
-- Node.js 20+
-- Python 3.11+
-- Docker & Docker Compose
-- uv (Python package manager)
-
-### Local Development
+### With Docker (everything in one command)
 
 ```bash
-# Clone and enter directory
-git clone <repo-url>
-cd Intelligent_Document_Assistant
+cp .env.example .env          # then set LLM_API_KEY / LLM_BASE_URL / LLM_MODEL
+docker compose up -d --build
+```
 
-# Start all services (PostgreSQL, Redis, Qdrant)
-docker compose up -d
+Then open **http://localhost:3000**. The API is on http://localhost:8000
+(Swagger UI at `/docs`).
 
-# Backend (in separate terminal)
-cd apps/api
-uv sync
+The compose file starts PostgreSQL, Redis, Qdrant, the API and the web app.
+The browser only ever talks to one origin: the web app proxies `/api/v1/*` to
+the API, so there is no CORS to configure.
+
+### Without Docker
+
+```bash
+npm install                     # installs every workspace
+docker compose up -d postgres redis qdrant   # just the data stores
+
+cd apps/api && uv sync && uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 
-# Frontend (in separate terminal)
-cd apps/web
-npm install
-npm run dev
+cd apps/web && npm run dev     # http://localhost:3000
 ```
 
-### Environment Variables
+## Environment Variables
 
-Copy `.env.example` to `.env` and configure:
+Copy `.env.example` to `.env`. Docker Compose overrides the database, Redis and
+Qdrant addresses with its own, so locally you only need the LLM:
 
 ```bash
-# Auth
-NEXTAUTH_SECRET=your-secret-key
-NEXTAUTH_URL=http://localhost:3000
-
-# Database
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/db
-REDIS_URL=redis://localhost:6379/0
-QDRANT_URL=http://localhost:6333
-
-# LLM (any OpenAI-compatible provider)
-LLM_API_KEY=your-api-key
+# LLM - any OpenAI-compatible endpoint (OpenAI, Groq, Gemini, Ollama, vLLM)
+LLM_API_KEY=sk-...
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
+
+# Auth (shared with NextAuth.js)
+NEXTAUTH_SECRET=$(openssl rand -base64 32)
+NEXTAUTH_URL=http://localhost:3000
 ```
+
+The rest (`DATABASE_URL`, `REDIS_URL`, `QDRANT_URL`, `CHUNK_SIZE`,
+`TOP_K`, `MAX_UPLOAD_MB`, …) have working defaults — see
+[`.env.example`](.env.example).
 
 ## Project Structure
 
 ```
 Intelligent_Document_Assistant/
 ├── apps/
-│   ├── api/                 # FastAPI backend
+│   ├── api/                    # FastAPI backend
 │   │   ├── app/
-│   │   │   ├── api/         # API routes (v1)
-│   │   │   ├── core/        # Config, exceptions
-│   │   │   ├── db/          # Database models, session
-│   │   │   ├── integrations/ # Qdrant, Redis, LLM clients
-│   │   │   ├── models/      # SQLAlchemy models
-│   │   │   ├── repositories/ # Data access layer
-│   │   │   ├── schemas/     # Pydantic schemas
-│   │   │   ├── services/    # Business logic
-│   │   │   └── utils/       # PDF/text extraction, chunking
-│   │   ├── alembic/         # Database migrations (shared)
-│   │   └── pyproject.toml   # Python dependencies
+│   │   │   ├── api/v1/         # routes: chat, documents, bookings, auth
+│   │   │   ├── core/           # settings, error envelope
+│   │   │   ├── db/             # session and base
+│   │   │   ├── integrations/   # qdrant, redis, llm clients
+│   │   │   ├── models/         # SQLAlchemy models
+│   │   │   ├── repositories/   # data access
+│   │   │   ├── schemas/        # Pydantic request/response models
+│   │   │   ├── services/       # rag, retrieval, booking, ingestion, chat
+│   │   │   ├── chunking/       # recursive and fixed-size chunkers
+│   │   │   └── utils/          # pdf and text extraction
+│   │   └── pyproject.toml
 │   │
-│   ├── web/                 # Next.js frontend
+│   ├── web/                    # Next.js frontend
 │   │   ├── src/
-│   │   │   ├── app/         # App Router pages
-│   │   │   ├── components/  # React components
-│   │   │   ├── hooks/       # Custom hooks
-│   │   │   └── lib/         # Utilities, API client, auth
-│   │   ├── e2e/             # Playwright E2E tests
-│   │   └── public/
+│   │   │   ├── app/
+│   │   │   │   ├── (app)/      # chat, documents, bookings (behind the nav)
+│   │   │   │   ├── api/auth/   # NextAuth route handler
+│   │   │   │   ├── login/      # sign-in page
+│   │   │   │   ├── global.css  # the palette from the design
+│   │   │   │   └── layout.tsx  # fonts, providers, theme bootstrap
+│   │   │   ├── components/     # chat, layout and ui components
+│   │   │   └── lib/            # auth, query client, helpers
+│   │   └── e2e/                # Playwright specs
 │   │
-│   └── web-e2e/             # E2E test configuration
+│   └── web-e2e/                # standalone Playwright project
 │
-├── packages/
-│   └── shared/              # Shared TypeScript/Zod schemas
-│       └── src/
-│           ├── schemas/     # Zod schemas
-│           ├── client/      # API client
-│           └── constants/   # Shared constants
+├── packages/shared/             # Zod schemas + API client
+│   └── src/{schemas,client,constants}/
 │
-├── tests/                   # Backend tests (unit + integration)
+├── tests/                       # backend tests
 │   ├── unit/
-│   ├── integration/
+│   ├── integration/             # needs PostgreSQL and Redis
 │   └── fakes/
 │
-├── alembic/                 # Database migrations
-│   ├── versions/            # Migration scripts
-│   ├── env.py               # Alembic environment
-│   └── script.py.mako       # Migration template
-│
-├── scripts/                 # Utility scripts
-│   ├── deploy.sh            # Production deployment
-│   ├── docker-entrypoint.sh # Container entrypoint
-│   ├── setup_local.sh       # Local setup helper
-│   └── smoke.sh             # Smoke tests
-│
-├── .github/workflows/       # GitHub Actions CI/CD
-├── docker-compose.yml       # Local development
-├── docker-compose.prod.yml  # Production deployment
-├── nginx.conf               # Nginx config (SSL termination)
-├── nx.json                  # Nx workspace config
-└── package.json             # Root package.json (npm workspaces)
+├── alembic/                     # migrations (versions/, env.py)
+├── docs/                        # the design this UI follows
+├── scripts/                     # deploy, entrypoint, local setup, smoke
+├── docker-compose.yml           # local development
+├── docker-compose.prod.yml      # production, behind nginx
+├── nginx.conf                   # TLS termination and rate limits
+└── nx.json
 ```
 
-## API Documentation
+## API
 
-FastAPI provides automatic API documentation:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-- OpenAPI JSON: `http://localhost:8000/openapi.json`
-
-### Key Endpoints
+FastAPI serves the OpenAPI docs at http://localhost:8000/docs.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/chat` | Non-streaming chat |
-| POST | `/api/v1/chat/stream` | Streaming chat (SSE) |
-| POST | `/api/v1/documents/ingest` | Upload document |
-| GET | `/api/v1/documents` | List documents |
-| GET | `/api/v1/documents/{id}` | Get document details |
-| GET | `/api/v1/documents/{id}/status/stream` | Document processing status (SSE) |
-| DELETE | `/api/v1/documents/{id}` | Delete document |
-| GET | `/api/v1/bookings` | List bookings |
-| POST | `/api/v1/bookings` | Create booking |
-| GET | `/api/v1/auth/verify` | Verify JWT token |
+| POST | `/api/v1/chat` | One chat turn, answered in full |
+| POST | `/api/v1/chat/stream` | One chat turn, streamed as SSE |
+| POST | `/api/v1/documents/ingest` | Upload a document (starts indexing) |
+| GET | `/api/v1/documents` | List documents (`status`, `search`, paging) |
+| GET | `/api/v1/documents/{id}` | Document details |
+| GET | `/api/v1/documents/{id}/status/stream` | Indexing progress (SSE) |
+| DELETE | `/api/v1/documents/{id}` | Delete a document and its vectors |
+| GET | `/api/v1/bookings` | List bookings (`email`, `interview_date`, paging) |
+| POST | `/api/v1/bookings` | Book a slot (409 if it is taken) |
+| GET | `/api/v1/bookings/{id}` | One booking |
+| DELETE | `/api/v1/bookings/{id}` | Cancel a booking, freeing the slot |
+| GET | `/api/v1/auth/verify` | Validate a NextAuth JWT |
+
+The stream events are `token`, `sources`, `booking`, `error` and `done`.
+
+### App routes
+
+| Route | Page |
+|-------|------|
+| `/chat` | Chat with the session sidebar (default landing page) |
+| `/documents` | Upload and watch the document library |
+| `/documents/{id}` | One document's metadata |
+| `/bookings` | Booking wizard and upcoming interviews |
+| `/login` | Sign-in page |
 
 ## Development
 
-### Running Tests
+Everything runs through Nx from the repository root:
 
 ```bash
-# Backend tests (from apps/api)
-cd apps/api
-uv run pytest tests/unit -v
-uv run pytest tests/integration -v
-
-# Frontend tests (from apps/web)
-cd apps/web
-npm run test          # Unit tests (Vitest)
-npm run test:e2e      # E2E tests (Playwright)
-
-# Linting
-cd apps/web && npm run lint
-cd apps/api && uv run ruff check .
+npm run build         # build every project
+npm test              # unit tests (Vitest + pytest)
+npm run lint          # eslint + ruff
+npm run typecheck     # tsc
 ```
 
-### Database Migrations
+Or target one project:
+
+```bash
+npx nx build web
+npx nx test web
+npx nx serve web      # dev server on :3000
+```
+
+Backend tests live at the repository root and use the API's pytest config:
+
+```bash
+cd apps/api
+uv run pytest ../../tests/unit -v
+uv run pytest ../../tests/integration -v   # needs PostgreSQL and Redis
+```
+
+Migrations:
 
 ```bash
 cd apps/api
@@ -200,29 +214,31 @@ uv run alembic upgrade head
 
 ## Deployment
 
-### Production with Docker Compose
-
 ```bash
-# Build and start production services
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-### Environment Variables (Production)
+The production stack puts nginx in front: it terminates TLS, rate-limits the
+API and serves the app. Put your certificates in `./certs/` and adjust
+`nginx.conf`. `NEXTAUTH_SECRET` must be set to a real secret.
+
+The web image bakes the API address into its build, because Next.js resolves
+`/api/v1/*` rewrites at build time:
 
 ```bash
-# Required
-NEXTAUTH_SECRET=generate-with-openssl-rand-base64-32
-NEXTAUTH_URL=https://your-domain.com
-DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db
-REDIS_URL=redis://host:6379/0
-QDRANT_URL=http://host:6333
-LLM_API_KEY=your-production-key
-LLM_MODEL=gpt-4o-mini
+docker compose build --build-arg NEXT_PUBLIC_API_URL=http://api:8000 web
 ```
 
-### SSL/HTTPS
+## Known Gaps
 
-The production Docker Compose includes Nginx for SSL termination. Place certificates in `./certs/` and update `nginx.conf`.
+- **No login endpoint yet.** The sign-in page posts to `/api/v1/auth/login`,
+  which the API does not implement — the app runs unauthenticated and the
+  navigation shows "Demo user". The API only exposes `/auth/verify`.
+- **Five backend test files still fail to import** (`QueryRewriter` became a
+  function, `rewrite_query`); they need updating against the current services.
+- **Bookings have no interview type.** The design shows a
+  Screening/Technical/Final picker, but the booking table stores only name,
+  email, date and time — so the field is not in the UI.
 
 ## Contributing
 
