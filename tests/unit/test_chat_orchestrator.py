@@ -9,7 +9,7 @@ import pytest
 
 from app.integrations.llm import ChatMessage
 from app.schemas.booking import BookingModel
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import ChatRequest, SourceModel
 from app.services.booking_service import BookingService, BookingTurn
 from app.services.chat_orchestrator import ChatOrchestrator
 from app.services.conversation_service import ConversationStore
@@ -43,6 +43,27 @@ class FakeRagService:
             rewritten_query=message,
             context_used=True,
         )
+
+    async def astream(
+        self,
+        message: str,
+        *,
+        history: Sequence[ChatMessage] = (),
+        document_ids: Sequence[UUID] | None = None,
+    ):
+        self.calls.append({"message": message, "history": history, "document_ids": document_ids})
+        for token in ("the ", "answer"):
+            yield token
+        yield {
+            "sources": [
+                SourceModel(
+                    document_id=uuid4(),
+                    filename="notes.pdf",
+                    chunk_index=3,
+                    score=0.9123,
+                )
+            ]
+        }
 
 
 class FakeBookingService:
@@ -221,3 +242,59 @@ async def test_a_confirmed_booking_is_returned(
     assert response.booking is not None
     assert response.booking.id == booked.id
     assert response.booking.status == "confirmed"
+
+
+async def test_the_stream_carries_the_tokens_the_sources_and_the_end(
+    orchestrator: ChatOrchestrator, store: FakeStore
+) -> None:
+    events = [
+        event
+        async for event in orchestrator.astream(
+            ChatRequest(session_id="s1", message="what is ml?")
+        )
+    ]
+
+    assert [event["type"] for event in events] == ["token", "token", "sources", "done"]
+    assert events[0]["content"] == "the "
+    assert events[2]["sources"][0]["filename"] == "notes.pdf"
+
+
+async def test_a_streamed_turn_is_persisted(
+    orchestrator: ChatOrchestrator, store: FakeStore
+) -> None:
+    async for _ in orchestrator.astream(ChatRequest(session_id="s1", message="what is ml?")):
+        pass
+
+    assert store.appended == [
+        ("s1", "user", "what is ml?"),
+        ("s1", "assistant", "the answer"),
+    ]
+
+
+async def test_a_booking_turn_streams_the_reply_it_wrote(
+    orchestrator: ChatOrchestrator, store: FakeStore, booking: FakeBookingService
+) -> None:
+    booking.turn = BookingTurn(
+        is_booking=True,
+        reply="Sure - I need your name.",
+        booking=BookingModel(missing_fields=["name"]),
+        missing_fields=["name"],
+        awaiting_confirmation=False,
+        persisted=False,
+    )
+
+    events = [
+        event
+        async for event in orchestrator.astream(
+            ChatRequest(session_id="s1", message="schedule one")
+        )
+    ]
+
+    assert events[0]["type"] == "booking"
+    assert events[0]["reply"] == "Sure - I need your name."
+    assert events[0]["booking"]["missing_fields"] == ["name"]
+    assert events[-1] == {"type": "done"}
+    assert store.appended == [
+        ("s1", "user", "schedule one"),
+        ("s1", "assistant", "Sure - I need your name."),
+    ]
