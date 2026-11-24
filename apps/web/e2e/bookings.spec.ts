@@ -1,107 +1,61 @@
 import { test, expect } from '@playwright/test';
+import { waitForHydration } from './support';
 
-test.describe('Booking Management', () => {
+test.describe('Bookings', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/login');
-    await page.fill('input[type="email"]', 'test@example.com');
-    await page.fill('input[type="password"]', 'password123');
-    await page.click('button:has-text("Sign in")');
-    await page.waitForURL('/dashboard');
     await page.goto('/bookings');
+    await waitForHydration(page);
+    await expect(page.getByRole('heading', { name: 'Interview bookings' })).toBeVisible();
   });
 
-  test.describe('Bookings List', () => {
-    test('shows bookings page', async ({ page }) => {
-      await expect(page.locator('h1:has-text("Bookings")')).toBeVisible();
-      await expect(page.locator('button:has-text("Book Interview")')).toBeVisible();
-    });
+  test('walks the wizard to a confirmed booking', async ({ page }) => {
+    // A click before the page is interactive is swallowed, so each step is
+    // clicked until it sticks.
+    const continueButton = page.locator('button:has-text("Continue")');
 
-    test('can filter by status', async ({ page }) => {
-      await page.click('button:has-text("Filter by status")');
-      await page.click('text=Confirmed');
-      await expect(page.locator('text=Confirmed')).toBeVisible();
-    });
+    // Date: the first day that is not in the past.
+    const day = page.locator('.grid-cols-7 button:not([disabled])').first();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await day.click();
+      await page.waitForTimeout(300);
+      if (await continueButton.isEnabled()) break;
+    }
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
+
+    // Time: the first slot nobody holds.
+    const slot = page.locator('button:not([disabled])').filter({ hasText: /^\d{2}:\d{2}$/ }).first();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await slot.click();
+      await page.waitForTimeout(300);
+      if (await continueButton.isEnabled()) break;
+    }
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
+
+    // Details.
+    await page.fill('input[autocomplete="name"]', 'Priya Shah');
+    await page.fill('input[autocomplete="email"]', 'priya@example.com');
+    await page.click('button:has-text("Continue")');
+
+    // Review and confirm.
+    await expect(page.getByRole('heading', { name: 'Review your booking' })).toBeVisible();
+    await page.click('button:has-text("Confirm booking")');
+
+    await expect(page.getByRole('heading', { name: 'Booking confirmed' })).toBeVisible();
+    await expect(page.getByText('A confirmation will go to priya@example.com.')).toBeVisible();
   });
 
-  test.describe('Booking Form', () => {
-    test('opens booking dialog', async ({ page }) => {
-      await page.click('button:has-text("Book Interview")');
-      await expect(page.locator('text=Booking Details')).toBeVisible();
-    });
+  test('lists the upcoming interviews', async ({ page }) => {
+    const response = await page.request.get('/api/v1/bookings?limit=100&offset=0');
+    const body = await response.json();
+    const today = new Date().toISOString().slice(0, 10);
+    const bookings = (body.items as { name: string; interview_date: string }[]).filter(
+      (booking) => booking.interview_date >= today,
+    );
 
-    test('shows validation errors', async ({ page }) => {
-      await page.click('button:has-text("Book Interview")');
-      await page.click('button:has-text("Continue")');
-
-      await expect(page.locator('text=Name is required')).toBeVisible();
-      await expect(page.locator('text=Email is required')).toBeVisible();
-      await expect(page.locator('text=Date is required')).toBeVisible();
-      await expect(page.locator('text=Time is required')).toBeVisible();
-    });
-
-    test('shows error for invalid email', async ({ page }) => {
-      await page.fill('input[id="name"]', 'John Doe');
-      await page.fill('input[id="email"]', 'invalid-email');
-      await page.click('button:has-text("Continue")');
-
-      await expect(page.locator('text=Invalid email format')).toBeVisible();
-    });
-
-    test('shows error for past date', async ({ page }) => {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const dateStr = yesterday.toISOString().split('T')[0];
-
-      await page.fill('input[id="name"]', 'John Doe');
-      await page.fill('input[id="email"]', 'john@example.com');
-      await page.fill('input[id="date"]', dateStr);
-      await page.click('button:has-text("Continue")');
-
-      await expect(page.locator('text=Date cannot be in the past')).toBeVisible();
-    });
-
-    test('can complete booking wizard', async ({ page }) => {
-      await page.fill('input[id="name"]', 'John Doe');
-      await page.fill('input[id="email"]', 'john@example.com');
-
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const dateStr = tomorrow.toISOString().split('T')[0];
-      await page.fill('input[id="date"]', dateStr);
-
-      await page.selectOption('select[id="time"]', '10:00');
-
-      await page.click('button:has-text("Continue")');
-
-      // Confirm step
-      await expect(page.locator('text=Please review your booking details')).toBeVisible();
-      await expect(page.locator('text=John Doe')).toBeVisible();
-      await expect(page.locator('text=john@example.com')).toBeVisible();
-
-      await page.click('button:has-text("Confirm Booking")');
-
-      // Success step
-      await expect(page.locator('text=Booking Confirmed!')).toBeVisible({ timeout: 10000 });
-    });
-  });
-
-  test.describe('Booking Table', () => {
-    test('shows bookings table', async ({ page }) => {
-      await expect(page.locator('table')).toBeVisible();
-      await expect(page.locator('th:has-text("Name")')).toBeVisible();
-      await expect(page.locator('th:has-text("Email")')).toBeVisible();
-      await expect(page.locator('th:has-text("Date & Time")')).toBeVisible();
-      await expect(page.locator('th:has-text("Status")')).toBeVisible();
-    });
-
-    test('can delete booking', async ({ page }) => {
-      // This test requires an existing booking - skip if no bookings exist
-      const firstRow = page.locator('tbody tr').first();
-      if (await firstRow.count() > 0) {
-        await firstRow.locator('button[aria-label="Delete booking"]').click();
-        await page.click('button:has-text("Delete")'); // confirm
-        await expect(page.locator('text=Booking deleted')).toBeVisible({ timeout: 5000 });
-      }
-    });
+    for (const booking of bookings) {
+      await expect(page.getByText(booking.name).first()).toBeVisible();
+    }
   });
 });

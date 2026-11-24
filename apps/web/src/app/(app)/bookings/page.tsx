@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@intelligent-doc-assistant/shared/client';
 
@@ -27,12 +27,19 @@ export default function BookingsPage() {
   const now = today();
 
   const [step, setStep] = useState(0);
+  // The calendar depends on today's date, and the server and the browser
+  // can be on different days: rendering it before the client takes over
+  // leaves React with a day the server called fine and the browser called
+  // past - a day it then refuses to let anyone click.
+  const [mounted, setMounted] = useState(false);
   const [view, setView] = useState({ year: now.getFullYear(), month: now.getMonth() });
   const [date, setDate] = useState<Date | null>(null);
   const [time, setTime] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
+
+  useEffect(() => setMounted(true), []);
 
   const { data, isLoading } = useQuery({
     queryKey: ['bookings'],
@@ -126,7 +133,11 @@ export default function BookingsPage() {
               ))}
             </div>
 
-            {step === 0 && (
+            {step === 0 && !mounted && (
+              <p className="text-muted-foreground">Loading the calendar…</p>
+            )}
+
+            {step === 0 && mounted && (
               <>
                 <div className="mb-2.5 flex items-center justify-between">
                   <button type="button" className="ghost" onClick={() => moveMonth(-1)} aria-label="Previous month">

@@ -1,41 +1,41 @@
 import { test, expect } from '@playwright/test';
+import { waitForHydration } from './support';
 
-test.describe('Authentication', () => {
+test.describe('App shell', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/chat');
+    await waitForHydration(page);
   });
 
-  test('shows login form', async ({ page }) => {
-    await expect(page.locator('h1:has-text("Sign in")')).toBeVisible();
-    await expect(page.locator('input[type="email"]')).toBeVisible();
-    await expect(page.locator('input[type="password"]')).toBeVisible();
-    await expect(page.locator('button:has-text("Sign in")')).toBeVisible();
+  test('shows the three sections', async ({ page }) => {
+    await expect(page.locator('nav a:has-text("Chat")')).toBeVisible();
+    await expect(page.locator('nav a:has-text("Documents")')).toBeVisible();
+    await expect(page.locator('nav a:has-text("Bookings")')).toBeVisible();
   });
 
-  test('shows validation errors for empty submit', async ({ page }) => {
-    await page.click('button:has-text("Sign in")');
-    await expect(page.locator('text=Email is required')).toBeVisible();
-    await expect(page.locator('text=Password is required')).toBeVisible();
+  test('the landing page lands on the chat', async ({ page }) => {
+    await page.goto('/');
+    await expect(page).toHaveURL(/\/chat$/);
   });
 
-  test('shows error for invalid credentials', async ({ page }) => {
-    await page.fill('input[type="email"]', 'invalid@example.com');
-    await page.fill('input[type="password"]', 'wrongpassword');
-    await page.click('button:has-text("Sign in")');
-    await expect(page.locator('text=Invalid email or password')).toBeVisible({ timeout: 5000 });
+  test('the theme can be switched', async ({ page }) => {
+    const toggle = page.locator('button[aria-label*="theme"]');
+
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await toggle.click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   });
 
-  test('redirects to dashboard on successful login', async ({ page }) => {
-    // This test requires a valid test user - skip if no test user exists
-    test.skip(true, 'Requires test user setup');
-  });
+  test('the navigation marks the current section', async ({ page }) => {
+    await page.click('nav a:has-text("Documents")');
 
-  test('shows OAuth buttons', async ({ page }) => {
-    await expect(page.locator('button:has-text("GitHub")')).toBeVisible();
-    await expect(page.locator('button:has-text("Google")')).toBeVisible();
-  });
-
-  test('has link to register', async ({ page }) => {
-    await expect(page.locator('a:has-text("Sign up")')).toBeVisible();
+    await expect(page).toHaveURL(/\/documents$/);
+    await expect(page.locator('nav a:has-text("Documents")')).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
   });
 });

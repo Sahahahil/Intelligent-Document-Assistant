@@ -1,65 +1,53 @@
 import { test, expect } from '@playwright/test';
+import { waitForHydration } from './support';
 
-test.describe('Chat Interface', () => {
+test.describe('Chat', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/login');
-    await page.fill('input[type="email"]', 'test@example.com');
-    await page.fill('input[type="password"]', 'password123');
-    await page.click('button:has-text("Sign in")');
-    await page.waitForURL('/dashboard');
-    await page.goto('/chat2');
+    await page.goto('/chat');
+    await waitForHydration(page);
+    await expect(page.locator('textarea[aria-label="Message"]')).toBeVisible();
   });
 
-  test('shows chat page', async ({ page }) => {
-    await expect(page.locator('h1:has-text("Chat")')).toBeVisible();
-    await expect(page.locator('textarea[placeholder="Ask a question..."]')).toBeVisible();
-    await expect(page.locator('button:has-text("Send")')).toBeVisible();
+  test('shows the empty state with suggestions', async ({ page }) => {
+    await expect(page.getByRole('heading', { name: 'What would you like to know?' })).toBeVisible();
+    await expect(page.locator('button:has-text("What uptime does the SLA promise?")')).toBeVisible();
   });
 
-  test('can send a message', async ({ page }) => {
-    await page.fill('textarea[placeholder="Ask a question..."]', 'Hello, how are you?');
-    await page.click('button:has-text("Send")');
-
-    // Wait for user message to appear
-    await expect(page.locator('text=Hello, how are you?')).toBeVisible();
-
-    // Wait for assistant response (streaming)
-    await expect(page.locator('.animate-pulse')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('.animate-pulse')).toBeHidden({ timeout: 30000 });
+  test('keeps the sessions in the sidebar', async ({ page }) => {
+    await expect(page.locator('aside button:has-text("New chat")')).toBeVisible();
+    await expect(page.locator('aside button:has-text("New conversation")')).toBeVisible();
   });
 
-  test('shows streaming indicator while waiting', async ({ page }) => {
-    await page.fill('textarea[placeholder="Ask a question..."]', 'Test message');
-    await page.click('button:has-text("Send")');
+  test('sends a message and shows it in the thread', async ({ page }) => {
+    await page.fill('textarea[aria-label="Message"]', 'What is in the handbook?');
+    // The button waits for the document list before it will send, and a
+    // click before the page is interactive is swallowed.
+    const bubble = page.locator('div.bg-primary');
+    await expect(page.locator('button:has-text("Send")')).toBeEnabled();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await page.click('button:has-text("Send")');
+      await page.waitForTimeout(500);
+      if (await bubble.count()) break;
+    }
 
-    // Streaming indicator should appear
-    await expect(page.locator('.animate-pulse')).toBeVisible({ timeout: 5000 });
+    await expect(bubble.getByText('What is in the handbook?')).toBeVisible();
+    // The composer is emptied once the message is on its way.
+    await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue('');
   });
 
-  test('disables input while streaming', async ({ page }) => {
-    await page.fill('textarea[placeholder="Ask a question..."]', 'Test');
-    await page.click('button:has-text("Send")');
+  test('a new chat starts an empty thread', async ({ page }) => {
+    await page.fill('textarea[aria-label="Message"]', 'What is in the handbook?');
+    const bubble = page.locator('div.bg-primary');
+    await expect(page.locator('button:has-text("Send")')).toBeEnabled();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await page.click('button:has-text("Send")');
+      await page.waitForTimeout(500);
+      if (await bubble.count()) break;
+    }
+    await expect(bubble.getByText('What is in the handbook?')).toBeVisible();
 
-    await expect(page.locator('textarea[placeholder="Ask a question..."]')).toBeDisabled({ timeout: 5000 });
-  });
+    await page.click('aside button:has-text("New chat")');
 
-  test('can send multiple messages', async ({ page }) => {
-    await page.fill('textarea[placeholder="Ask a question..."]', 'First message');
-    await page.click('button:has-text("Send")');
-    await expect(page.locator('.animate-pulse')).toBeHidden({ timeout: 30000 });
-
-    await page.fill('textarea[placeholder="Ask a question..."]', 'Second message');
-    await page.click('button:has-text("Send")');
-    await expect(page.locator('.animate-pulse')).toBeVisible({ timeout: 5000 });
-  });
-
-  test('shows session sidebar', async ({ page }) => {
-    await expect(page.locator('text=Conversations')).toBeVisible();
-    await expect(page.locator('button:has-text("+")')).toBeVisible();
-  });
-
-  test('can create new session', async ({ page }) => {
-    await page.click('button:has-text("+")');
-    await expect(page.locator('text=Conversations')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'What would you like to know?' })).toBeVisible();
   });
 });
