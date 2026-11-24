@@ -2,20 +2,24 @@
 
 The repository, the vector store and the embedder are fakes here — the real
 ones are exercised in `tests/integration/test_ingestion_service.py`.
+
+The pipeline runs in the background: `start` writes the row and returns it,
+and the tests wait for the row to reach its final state.
 """
 
+import asyncio
 import hashlib
 from pathlib import Path
 from typing import cast
 from uuid import UUID
 
 import pytest
+from redis.asyncio import Redis
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.exceptions import (
     ConflictError,
-    ExtractionError,
     PayloadTooLargeError,
     UnsupportedFileTypeError,
     ValidationError,
@@ -24,7 +28,7 @@ from app.integrations.qdrant import VectorStore
 from app.models.document import Document, DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.services.embedding_service import EmbeddingService
-from app.services.ingestion_service import IngestionResult, IngestionService
+from app.services.ingestion_service import IngestionService
 from tests.fakes import FakeEmbeddingService, FakeVectorStore
 
 TEXT = ("Machine learning is a field of study. " * 60).encode()
@@ -35,6 +39,8 @@ class FakeDocumentRepository:
     def __init__(self) -> None:
         self.documents: dict[UUID, Document] = {}
         self.create_error: Exception | None = None
+        # Set when the pipeline reaches the end of a row, one way or the other.
+        self.finished = asyncio.Event()
 
     async def get_by_hash(self, file_hash: str) -> Document | None:
         return next((d for d in self.documents.values() if d.file_hash == file_hash), None)
@@ -61,10 +67,45 @@ class FakeDocumentRepository:
             document.total_chunks = total_chunks
         if error_message is not None:
             document.error_message = error_message
+        if status in (DocumentStatus.COMPLETED, DocumentStatus.FAILED):
+            self.finished.set()
         return True
 
     async def delete(self, document_id: UUID) -> bool:
         return self.documents.pop(document_id, None) is not None
+
+
+class FakeRedis:
+    """Just enough Redis for the progress."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> bool:
+        self.data[key] = value
+        return True
+
+    async def delete(self, key: str) -> int:
+        return 1 if self.data.pop(key, None) is not None else 0
+
+
+class FakeSession:
+    """The session the background pipeline opens for itself."""
+
+    async def __aenter__(self) -> "FakeSession":
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
 
 
 class Boom(RuntimeError):
@@ -87,26 +128,44 @@ def embedder() -> FakeEmbeddingService:
 
 
 @pytest.fixture
+def redis() -> FakeRedis:
+    return FakeRedis()
+
+
+@pytest.fixture
 def service(
-    repo: FakeDocumentRepository, store: FakeVectorStore, embedder: FakeEmbeddingService
+    repo: FakeDocumentRepository,
+    store: FakeVectorStore,
+    embedder: FakeEmbeddingService,
+    redis: FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> IngestionService:
+    # The pipeline runs in the background and opens its own session and
+    # repository, so both are pointed at the fakes here.
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(
+        "app.repositories.document_repository.DocumentRepository", lambda session: repo
+    )
     return IngestionService(
         document_repo=cast(DocumentRepository, repo),
         vector_store=cast(VectorStore, store),
         embedding_service=cast(EmbeddingService, embedder),
+        redis=cast(Redis, redis),
     )
 
 
 async def ingest(
     service: IngestionService,
+    repo: FakeDocumentRepository,
     data: bytes = TEXT,
     *,
     filename: str = "notes.txt",
     chunking_strategy: str = "recursive",
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
-) -> IngestionResult:
-    return await service.ingest(
+) -> Document:
+    """Start an ingestion and wait for the pipeline to finish with it."""
+    document = await service.start(
         filename=filename,
         content_type="text/plain",
         data=data,
@@ -114,30 +173,30 @@ async def ingest(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
     )
+    await asyncio.wait_for(repo.finished.wait(), timeout=30)
+    repo.finished.clear()
+    return document
 
 
 async def test_a_valid_text_file_is_ingested(
     service: IngestionService, repo: FakeDocumentRepository, store: FakeVectorStore
 ) -> None:
-    result = await ingest(service)
+    document = await ingest(service, repo)
 
-    assert result.status == "completed"
-    assert result.total_chunks > 0
-    assert result.chunking_strategy == "recursive"
-    assert len(repo.documents) == 1
-    document = next(iter(repo.documents.values()))
     assert document.status == DocumentStatus.COMPLETED
-    assert document.total_chunks == result.total_chunks
+    assert document.total_chunks > 0
+    assert document.chunking_strategy == "recursive"
+    assert len(repo.documents) == 1
     assert len(store.upserts) == 1
 
 
 async def test_the_same_file_twice_is_a_conflict(
     service: IngestionService, repo: FakeDocumentRepository
 ) -> None:
-    await ingest(service)
+    await ingest(service, repo)
 
     with pytest.raises(ConflictError):
-        await ingest(service)
+        await ingest(service, repo)
 
     assert len(repo.documents) == 1
 
@@ -147,37 +206,52 @@ async def test_a_failed_file_can_be_retried(
 ) -> None:
     store.upsert_error = Boom("qdrant is down")
 
-    with pytest.raises(Boom):
-        await ingest(service)
+    await ingest(service, repo)
+
     assert len(repo.documents) == 1
+    assert next(iter(repo.documents.values())).status == DocumentStatus.FAILED
 
     store.upsert_error = None
-    result = await ingest(service)
+    document = await ingest(service, repo)
 
-    assert result.status == "completed"
+    assert document.status == DocumentStatus.COMPLETED
     assert len(repo.documents) == 1
 
 
 async def test_an_unsupported_extension_is_rejected(service: IngestionService) -> None:
     with pytest.raises(UnsupportedFileTypeError):
-        await ingest(service, data=b"MZ", filename="virus.exe")
+        await service.start(
+            filename="virus.exe",
+            content_type="application/octet-stream",
+            data=b"MZ",
+            chunking_strategy="recursive",
+        )
 
 
 async def test_an_empty_file_is_rejected(service: IngestionService) -> None:
     with pytest.raises(ValidationError):
-        await ingest(service, data=b"")
+        await service.start(
+            filename="notes.txt",
+            content_type="text/plain",
+            data=b"",
+            chunking_strategy="recursive",
+        )
 
 
 async def test_an_oversized_file_is_rejected(service: IngestionService) -> None:
     with pytest.raises(PayloadTooLargeError):
-        await ingest(service, data=b"x" * (21 * 1024 * 1024))
+        await service.start(
+            filename="notes.txt",
+            content_type="text/plain",
+            data=b"x" * (21 * 1024 * 1024),
+            chunking_strategy="recursive",
+        )
 
 
 async def test_a_file_without_text_fails_and_marks_the_row(
     service: IngestionService, repo: FakeDocumentRepository
 ) -> None:
-    with pytest.raises(ExtractionError):
-        await ingest(service, data=b"   \n\n  ")
+    await ingest(service, repo, data=b"   \n\n  ")
 
     document = next(iter(repo.documents.values()))
     assert document.status == DocumentStatus.FAILED
@@ -191,8 +265,7 @@ async def test_a_failing_upsert_marks_the_row_and_cleans_up(
 ) -> None:
     store.upsert_error = Boom("qdrant is down")
 
-    with pytest.raises(Boom):
-        await ingest(service)
+    await ingest(service, repo)
 
     document = next(iter(repo.documents.values()))
     assert document.status == DocumentStatus.FAILED
@@ -205,37 +278,27 @@ async def test_a_failing_embedder_marks_the_row(
 ) -> None:
     embedder.error = Boom("model exploded")
 
-    with pytest.raises(Boom):
-        await ingest(service)
+    await ingest(service, repo)
 
     document = next(iter(repo.documents.values()))
     assert document.status == DocumentStatus.FAILED
     assert document.error_message == "model exploded"
 
 
-async def test_the_duration_is_reported(service: IngestionService) -> None:
-    result = await ingest(service)
-
-    assert isinstance(result.duration_ms, int)
-    assert result.duration_ms > 0
-
-
 async def test_the_embedding_model_is_recorded(
     service: IngestionService, repo: FakeDocumentRepository
 ) -> None:
-    result = await ingest(service)
+    await ingest(service, repo)
 
     document = next(iter(repo.documents.values()))
     assert document.embedding_model == "fake-model"
     assert document.embedding_dim == DIMENSION
-    assert result.embedding_model == "fake-model"
-    assert result.embedding_dim == DIMENSION
 
 
 async def test_the_chunk_parameters_are_recorded(
     service: IngestionService, repo: FakeDocumentRepository
 ) -> None:
-    await ingest(service, chunk_size=50, chunk_overlap=10)
+    await ingest(service, repo, chunk_size=50, chunk_overlap=10)
 
     document = next(iter(repo.documents.values()))
     assert document.chunk_size == 50
@@ -246,18 +309,21 @@ async def test_a_zero_chunk_size_means_the_default(
     service: IngestionService, repo: FakeDocumentRepository
 ) -> None:
     """An empty number field in the API docs is sent as 0 - that is "not set"."""
-    await ingest(service, chunk_size=0, chunk_overlap=0)
+    await ingest(service, repo, chunk_size=0, chunk_overlap=0)
 
     document = next(iter(repo.documents.values()))
     assert document.chunk_size == get_settings().chunk_size
     assert document.chunk_overlap == get_settings().chunk_overlap
 
 
-async def test_a_smaller_chunk_size_makes_more_chunks(service: IngestionService) -> None:
-    big = await ingest(service, chunk_size=500, chunk_overlap=50)
+async def test_a_smaller_chunk_size_makes_more_chunks(
+    service: IngestionService, repo: FakeDocumentRepository
+) -> None:
+    big = await ingest(service, repo, chunk_size=500, chunk_overlap=50)
     # Different bytes, so this is a different document and not a duplicate.
     small = await ingest(
         service,
+        repo,
         data=b"Machine learning is a field of study. " * 61,
         chunk_size=50,
         chunk_overlap=10,
@@ -268,12 +334,24 @@ async def test_a_smaller_chunk_size_makes_more_chunks(service: IngestionService)
 
 async def test_an_unknown_strategy_is_rejected(service: IngestionService) -> None:
     with pytest.raises(ValidationError):
-        await ingest(service, chunking_strategy="magic")
+        await service.start(
+            filename="notes.txt",
+            content_type="text/plain",
+            data=TEXT,
+            chunking_strategy="magic",
+        )
 
 
 async def test_an_invalid_overlap_is_rejected(service: IngestionService) -> None:
     with pytest.raises(ValidationError):
-        await ingest(service, chunk_size=10, chunk_overlap=10)
+        await service.start(
+            filename="notes.txt",
+            content_type="text/plain",
+            data=TEXT,
+            chunking_strategy="recursive",
+            chunk_size=10,
+            chunk_overlap=10,
+        )
 
 
 async def test_a_hash_race_becomes_a_conflict(
@@ -282,13 +360,20 @@ async def test_a_hash_race_becomes_a_conflict(
     repo.create_error = IntegrityError("insert", {}, Exception("duplicate key"))
 
     with pytest.raises(ConflictError):
-        await ingest(service)
+        await service.start(
+            filename="notes.txt",
+            content_type="text/plain",
+            data=TEXT,
+            chunking_strategy="recursive",
+        )
 
 
-async def test_nothing_is_written_to_disk(service: IngestionService, tmp_path: Path) -> None:
+async def test_nothing_is_written_to_disk(
+    service: IngestionService, repo: FakeDocumentRepository, tmp_path: Path
+) -> None:
     before = sorted(path.name for path in tmp_path.iterdir())
 
-    await ingest(service)
+    await ingest(service, repo)
 
     assert sorted(path.name for path in tmp_path.iterdir()) == before
 
@@ -296,7 +381,7 @@ async def test_nothing_is_written_to_disk(service: IngestionService, tmp_path: P
 async def test_the_file_hash_is_the_sha256_of_the_bytes(
     service: IngestionService, repo: FakeDocumentRepository
 ) -> None:
-    await ingest(service)
+    await ingest(service, repo)
 
     document = next(iter(repo.documents.values()))
     assert document.file_hash == hashlib.sha256(TEXT).hexdigest()

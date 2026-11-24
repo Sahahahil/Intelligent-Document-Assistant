@@ -18,7 +18,7 @@ from app.core.exceptions import ConflictError, ValidationError
 from app.integrations.qdrant import get_vector_store
 from app.main import app
 from app.models.document import ChunkingStrategy, Document, DocumentStatus
-from app.services.ingestion_service import IngestionResult
+from app.models.document import Document
 from tests.fakes import FakeVectorStore
 
 
@@ -53,9 +53,16 @@ class FakeDocumentRepository:
         return next((d for d in self.documents if d.id == document_id), None)
 
     async def list(
-        self, *, limit: int = 20, offset: int = 0, status: DocumentStatus | None = None
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        status: DocumentStatus | None = None,
+        search: str | None = None,
     ) -> tuple[list[Document], int]:
         rows = [d for d in self.documents if status is None or d.status == status]
+        if search:
+            rows = [d for d in rows if search.lower() in d.filename.lower()]
         return rows[offset : offset + limit], len(rows)
 
     async def delete(self, document_id: UUID) -> bool:
@@ -68,19 +75,24 @@ class FakeIngestionService:
         self.calls: list[dict[str, object]] = []
         self.error: Exception | None = None
 
-    async def ingest(self, **kwargs: object) -> IngestionResult:
+    async def start(self, **kwargs: object) -> Document:
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
-        return IngestionResult(
-            document_id=uuid4(),
+        return Document(
+            id=uuid4(),
             filename=str(kwargs["filename"]),
-            status=DocumentStatus.COMPLETED,
+            content_type="text/plain",
+            file_size=11,
+            file_hash="hash",
+            file_extension="txt",
             chunking_strategy=ChunkingStrategy(str(kwargs["chunking_strategy"])),
-            total_chunks=3,
+            chunk_size=200,
+            chunk_overlap=40,
+            total_chunks=0,
             embedding_model="fake-model",
             embedding_dim=384,
-            duration_ms=12,
+            status=DocumentStatus.PROCESSING,
         )
 
 
@@ -112,7 +124,7 @@ def _overrides(
     app.dependency_overrides.clear()
 
 
-async def test_ingest_returns_201_and_the_document(
+async def test_ingest_returns_202_and_the_document(
     client: AsyncClient, service: FakeIngestionService
 ) -> None:
     response = await client.post(
@@ -121,14 +133,14 @@ async def test_ingest_returns_201_and_the_document(
         data={"chunking_strategy": "recursive"},
     )
 
-    assert response.status_code == status.HTTP_201_CREATED
+    assert response.status_code == status.HTTP_202_ACCEPTED
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["status"] == "processing"
     assert body["chunking_strategy"] == "recursive"
-    assert body["total_chunks"] == 3
+    assert body["total_chunks"] == 0
     assert body["embedding_model"] == "fake-model"
     assert body["embedding_dim"] == 384
-    assert body["duration_ms"] == 12
+    assert body["duration_ms"] == 0
     assert UUID(body["document_id"])
     assert len(service.calls) == 1
 
@@ -162,7 +174,7 @@ async def test_ingest_passes_the_fixed_size_strategy_through(
         data={"chunking_strategy": "fixed_size"},
     )
 
-    assert response.status_code == status.HTTP_201_CREATED
+    assert response.status_code == status.HTTP_202_ACCEPTED
     assert response.json()["chunking_strategy"] == "fixed_size"
 
 
@@ -218,7 +230,7 @@ async def test_a_unicode_filename_round_trips(client: AsyncClient) -> None:
         files={"file": ("rapport-été-日本語.txt", b"hello", "text/plain")},
     )
 
-    assert response.status_code == status.HTTP_201_CREATED
+    assert response.status_code == status.HTTP_202_ACCEPTED
     assert response.json()["filename"] == "rapport-été-日本語.txt"
 
 
