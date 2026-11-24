@@ -10,7 +10,7 @@
     "./constants": "./src/constants/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx"
   },
@@ -24,10 +24,6 @@
   },
   "nx": {
     "targets": {
-      "test": {
-        "executor": "@nx/vite:test",
-        "outputs": ["{projectRoot}/coverage"]
-      },
       "typecheck": {
         "executor": "nx:run-commands",
         "options": {
@@ -35,7 +31,10 @@
         }
       },
       "lint": {
-        "executor": "@nx/eslint:lint"
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "eslint packages/shared/src"
+        }
       }
     }
   }

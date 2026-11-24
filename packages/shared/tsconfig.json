@@ -5,7 +5,9 @@
     "rootDir": ".",
     "declaration": true,
     "declarationMap": true,
-    "noEmit": false
+    "noEmit": false,
+    "paths": {},
+    "types": ["node"]
   },
   "include": ["src/**/*", "vitest.config.ts"],
   "exclude": ["node_modules", "dist"]

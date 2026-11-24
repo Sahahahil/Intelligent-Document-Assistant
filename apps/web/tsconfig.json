@@ -17,7 +17,17 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@intelligent-doc-assistant/shared": ["../../packages/shared/src/index.ts"],
+      "@intelligent-doc-assistant/shared/client": [
+        "../../packages/shared/src/client/api.ts"
+      ],
+      "@intelligent-doc-assistant/shared/schemas": [
+        "../../packages/shared/src/schemas/index.ts"
+      ],
+      "@intelligent-doc-assistant/shared/constants": [
+        "../../packages/shared/src/constants/index.ts"
+      ]
     },
     "types": [
       "vitest/globals",
@@ -27,7 +37,7 @@
       "vitest"
     ],
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "../..",
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "include": [

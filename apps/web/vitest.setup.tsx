@@ -55,7 +55,7 @@ vi.mock('@tanstack/react-query', () => ({
     invalidateQueries: vi.fn(),
     setQueryData: vi.fn(),
     getQueryData: vi.fn(),
-  }),
+  })),
   QueryClientProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 

@@ -1,8 +1,8 @@
-import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import GitHub from 'next-auth/providers/github';
 import Google from 'next-auth/providers/google';
 import { JWT } from 'next-auth/jwt';
+import type { AuthOptions } from 'next-auth';
 
 declare module 'next-auth' {
   interface Session {
@@ -27,7 +27,7 @@ declare module 'next-auth/jwt' {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+export const authOptions: AuthOptions = {
   providers: [
     Credentials({
       name: 'Email/Password',
@@ -93,4 +93,4 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: {
     signIn: '/login',
   },
-});
+};

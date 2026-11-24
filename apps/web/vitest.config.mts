@@ -4,10 +4,13 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  // The app's tsconfig keeps JSX as-is for Next; the tests need the
+  // automatic runtime so the test files do not import React.
+  esbuild: { jsx: 'automatic' },
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['./vitest.setup.ts'],
+    setupFiles: ['./vitest.setup.tsx'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     coverage: {
       provider: 'v8',
@@ -18,10 +21,6 @@ export default defineConfig({
         functions: 40,
         lines: 50,
       },
-    },
-    // Disable externalize-deps to allow ESM packages
-    deps: {
-      inline: ['@vitejs/plugin-react'],
     },
   },
   resolve: {

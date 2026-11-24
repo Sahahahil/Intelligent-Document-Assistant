@@ -4,10 +4,11 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  esbuild: { jsx: 'automatic' },
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['./vitest.setup.ts'],
+    setupFiles: ['./vitest.setup.tsx'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['**/e2e/**', '**/node_modules/**', '**/dist/**', '**/.next/**', '**/coverage/**'],
     coverage: {
@@ -19,9 +20,6 @@ export default defineConfig({
         functions: 40,
         lines: 50,
       },
-    },
-    deps: {
-      inline: ['@vitejs/plugin-react'],
     },
   },
   resolve: {
