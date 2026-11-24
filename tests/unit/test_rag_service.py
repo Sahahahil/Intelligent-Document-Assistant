@@ -10,7 +10,6 @@ import pytest
 from app.core.exceptions import UpstreamError
 from app.integrations.llm import ChatMessage, LLMClient
 from app.integrations.qdrant import RetrievedChunk
-from app.services.query_rewriter import QueryRewriter
 from app.services.rag_service import (
     MAX_CONTEXT_CHARS,
     MAX_HISTORY_MESSAGES,
@@ -18,7 +17,8 @@ from app.services.rag_service import (
     NO_CONTEXT,
     RAGService,
 )
-from app.services.retrieval_service import RetrievalService
+from app.integrations.qdrant import VectorStore
+from app.services.embedding_service import EmbeddingService
 from tests.fakes import FakeLLM
 
 
@@ -35,20 +35,29 @@ def make_chunk(
 
 
 class FakeRetrieval:
+    """Stands in for the vector store: it returns the chunks it was given."""
+
     def __init__(self, chunks: list[RetrievedChunk] | None = None) -> None:
         self.chunks = chunks or []
         self.calls: list[dict[str, object]] = []
 
-    async def retrieve(
+    async def search(
         self,
-        query: str,
+        vector: Sequence[float],
         *,
-        top_k: int | None = None,
+        top_k: int,
         document_ids: Sequence[UUID] | None = None,
         score_threshold: float | None = None,
     ) -> list[RetrievedChunk]:
-        self.calls.append({"query": query, "document_ids": document_ids})
+        self.calls.append({"top_k": top_k, "document_ids": document_ids})
         return self.chunks
+
+
+class FakeEmbeddings:
+    """Every text embeds to the same placeholder vector."""
+
+    def embed_query(self, text: str) -> list[float]:
+        return [0.0, 0.0, 0.0]
 
 
 class FakeRewriter:
@@ -72,9 +81,18 @@ def retrieval() -> FakeRetrieval:
 
 
 @pytest.fixture
-def service(retrieval: FakeRetrieval, llm: FakeLLM) -> RAGService:
+def service(
+    retrieval: FakeRetrieval, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+) -> RAGService:
+    # The rewrite is a module function: the default here leaves the message
+    # alone, so the model is only asked for the answer.
+    async def no_rewrite(llm_client: LLMClient, message: str, history: list[ChatMessage]) -> str:
+        return message
+
+    monkeypatch.setattr("app.services.rag_service.rewrite_query", no_rewrite)
     return RAGService(
-        retrieval=cast(RetrievalService, retrieval),
+        vector_store=cast(VectorStore, retrieval),
+        embedding_service=cast(EmbeddingService, FakeEmbeddings()),
         llm=cast(LLMClient, llm),
     )
 
@@ -139,19 +157,24 @@ async def test_the_sources_match_the_chunks_that_were_used(
 
 
 async def test_the_rewriter_produces_the_retrieval_query(
-    retrieval: FakeRetrieval, llm: FakeLLM
+    retrieval: FakeRetrieval, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rewriter = FakeRewriter()
+
+    async def rewrite(llm_client: LLMClient, message: str, history: list[ChatMessage]) -> str:
+        return await rewriter.rewrite(message, history)
+
+    monkeypatch.setattr("app.services.rag_service.rewrite_query", rewrite)
     service = RAGService(
-        retrieval=cast(RetrievalService, retrieval),
+        vector_store=cast(VectorStore, retrieval),
+        embedding_service=cast(EmbeddingService, FakeEmbeddings()),
         llm=cast(LLMClient, llm),
-        rewriter=cast(QueryRewriter, rewriter),
     )
 
     result = await service.answer("what about the second one?", history=[])
 
     assert result.rewritten_query == "a standalone question"
-    assert retrieval.calls[0]["query"] == "a standalone question"
+    assert rewriter.calls[0][0] == "what about the second one?"
     assert len(rewriter.calls) == 1
 
 
@@ -161,7 +184,6 @@ async def test_without_a_rewriter_the_original_message_is_the_query(
     result = await service.answer("what about the second one?")
 
     assert result.rewritten_query == "what about the second one?"
-    assert retrieval.calls[0]["query"] == "what about the second one?"
 
 
 async def test_only_the_last_six_history_messages_reach_the_prompt(
@@ -200,7 +222,8 @@ async def test_the_context_is_capped_and_the_dropped_chunks_are_logged(
 async def test_a_failing_llm_propagates(retrieval: FakeRetrieval) -> None:
     llm = FakeLLM(UpstreamError("LLM error: 500"))
     service = RAGService(
-        retrieval=cast(RetrievalService, retrieval),
+        vector_store=cast(VectorStore, retrieval),
+        embedding_service=cast(EmbeddingService, FakeEmbeddings()),
         llm=cast(LLMClient, llm),
     )
 

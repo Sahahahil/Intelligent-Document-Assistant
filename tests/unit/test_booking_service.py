@@ -22,8 +22,8 @@ from app.models.booking import Booking
 from app.repositories.booking_repository import BookingRepository
 from app.schemas.booking import BookingExtraction, BookingFields
 from app.services.booking_service import (
-    BookingExtractor,
     BookingService,
+    extract_booking,
     missing_fields,
     require_details,
 )
@@ -32,16 +32,17 @@ from tests.fakes import FakeLLM
 
 def service_with(
     payload: dict[str, Any] | None = None, *, error: Exception | None = None
-) -> tuple[BookingExtractor, FakeLLM]:
-    """An extractor whose model answers with `payload` - or fails with `error`."""
-    llm = FakeLLM(error) if error is not None else FakeLLM(json.dumps(payload or {}, default=str))
-    return BookingExtractor(cast(LLMClient, llm)), llm
+) -> FakeLLM:
+    """A model that answers with `payload` - or fails with `error`."""
+    if error is not None:
+        return FakeLLM(error)
+    return FakeLLM(json.dumps(payload or {}, default=str))
 
 
 async def test_a_booking_request_is_detected() -> None:
-    service, _ = service_with({"is_booking_request": True, "fields": {}})
+    llm = service_with({"is_booking_request": True, "fields": {}})
 
-    result = await service.extract("I want to schedule an interview", [])
+    result = await extract_booking(cast(LLMClient, llm), "I want to schedule an interview", [])
 
     assert result.is_booking_request is True
     assert result.fields.name is None
@@ -51,14 +52,14 @@ async def test_a_booking_request_is_detected() -> None:
 
 
 async def test_the_name_and_email_are_extracted() -> None:
-    service, _ = service_with(
+    llm = service_with(
         {
             "is_booking_request": True,
             "fields": {"name": "Sahil Duwal", "email": "sahil@example.com"},
         }
     )
 
-    result = await service.extract("My name is Sahil Duwal, email sahil@example.com", [])
+    result = await extract_booking(cast(LLMClient, llm), "My name is Sahil Duwal, email sahil@example.com", [])
 
     assert result.fields.name == "Sahil Duwal"
     assert result.fields.email == "sahil@example.com"
@@ -66,58 +67,61 @@ async def test_the_name_and_email_are_extracted() -> None:
 
 
 async def test_the_date_is_extracted() -> None:
-    service, _ = service_with(
-        {"is_booking_request": True, "fields": {"interview_date": "2026-11-20"}}
+    # A date in the future: a past one is dropped on purpose.
+    when = date.today() + timedelta(days=30)
+    llm = service_with(
+        {"is_booking_request": True, "fields": {"interview_date": when.isoformat()}}
     )
 
-    result = await service.extract("November 20, 2026", [])
+    result = await extract_booking(cast(LLMClient, llm), "in a month", [])
 
-    assert result.fields.interview_date == date(2026, 11, 20)
+    assert result.fields.interview_date == when
 
 
 async def test_the_time_is_extracted() -> None:
-    service, _ = service_with({"is_booking_request": True, "fields": {"interview_time": "14:00"}})
+    llm = service_with({"is_booking_request": True, "fields": {"interview_time": "14:00"}})
 
-    result = await service.extract("2 PM", [])
+    result = await extract_booking(cast(LLMClient, llm), "2 PM", [])
 
     assert result.fields.interview_time == time(14, 0)
 
 
 async def test_the_date_and_time_are_extracted_together() -> None:
-    service, _ = service_with(
+    when = date.today() + timedelta(days=30)
+    llm = service_with(
         {
             "is_booking_request": True,
-            "fields": {"interview_date": "2026-11-20", "interview_time": "14:30"},
+            "fields": {"interview_date": when.isoformat(), "interview_time": "14:30"},
         }
     )
 
-    result = await service.extract("2 pm on 20 Nov 2026", [])
+    result = await extract_booking(cast(LLMClient, llm), "2 pm on the date", [])
 
-    assert result.fields.interview_date == date(2026, 11, 20)
+    assert result.fields.interview_date == when
     assert result.fields.interview_time == time(14, 30)
 
 
 async def test_an_ordinary_question_is_not_a_booking_request() -> None:
-    service, _ = service_with({"is_booking_request": False, "fields": {}})
+    llm = service_with({"is_booking_request": False, "fields": {}})
 
-    result = await service.extract("What is machine learning?", [])
+    result = await extract_booking(cast(LLMClient, llm), "What is machine learning?", [])
 
     assert result.is_booking_request is False
 
 
 async def test_asking_how_to_book_is_not_booking() -> None:
-    service, llm = service_with({"is_booking_request": False, "fields": {}})
+    llm = service_with({"is_booking_request": False, "fields": {}})
 
-    result = await service.extract("How do I book a demo?", [])
+    result = await extract_booking(cast(LLMClient, llm), "How do I book a demo?", [])
 
     assert result.is_booking_request is False
     assert "Asking how to book is not booking" in llm.sent[0].content
 
 
 async def test_an_empty_payload_gives_the_default() -> None:
-    service, _ = service_with({})
+    llm = service_with({})
 
-    result = await service.extract("hello", [])
+    result = await extract_booking(cast(LLMClient, llm), "hello", [])
 
     assert result.is_booking_request is False
     assert result.fields.name is None
@@ -127,44 +131,44 @@ async def test_an_empty_payload_gives_the_default() -> None:
 async def test_invalid_json_gives_the_default(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    service, _ = service_with(error=UpstreamError("LLM returned invalid JSON"))
+    llm = service_with(error=UpstreamError("LLM returned invalid JSON"))
 
     with caplog.at_level(logging.WARNING):
-        result = await service.extract("hello", [])
+        result = await extract_booking(cast(LLMClient, llm), "hello", [])
 
     assert result.is_booking_request is False
     assert "Booking extraction failed" in caplog.text
 
 
 async def test_a_wrongly_typed_field_gives_the_default() -> None:
-    service, _ = service_with({"is_booking_request": True, "fields": {"email": 123}})
+    llm = service_with({"is_booking_request": True, "fields": {"email": 123}})
 
-    result = await service.extract("hello", [])
+    result = await extract_booking(cast(LLMClient, llm), "hello", [])
 
     assert result.is_booking_request is False
     assert result.fields.email is None
 
 
 async def test_the_missing_fields_name_what_is_absent() -> None:
-    service, _ = service_with({"is_booking_request": True, "fields": {"name": "Sahil Duwal"}})
+    llm = service_with({"is_booking_request": True, "fields": {"name": "Sahil Duwal"}})
 
-    result = await service.extract("my name is Sahil Duwal", [])
+    result = await extract_booking(cast(LLMClient, llm), "my name is Sahil Duwal", [])
 
     assert missing_fields(result.fields) == ["email", "date", "time"]
 
 
 async def test_the_missing_fields_are_computed_in_order() -> None:
-    service, _ = service_with({"is_booking_request": True, "fields": {}})
+    llm = service_with({"is_booking_request": True, "fields": {}})
 
-    result = await service.extract("schedule an interview", [])
+    result = await extract_booking(cast(LLMClient, llm), "schedule an interview", [])
 
     assert missing_fields(result.fields) == ["name", "email", "date", "time"]
 
 
 async def test_the_history_reaches_the_prompt() -> None:
-    service, llm = service_with({"is_booking_request": True, "fields": {}})
+    llm = service_with({"is_booking_request": True, "fields": {}})
 
-    await service.extract(
+    await extract_booking(cast(LLMClient, llm), 
         "November 20",
         [
             ChatMessage(role="user", content="what date?"),
@@ -179,25 +183,25 @@ async def test_the_history_reaches_the_prompt() -> None:
 
 
 async def test_todays_date_is_in_the_prompt() -> None:
-    service, llm = service_with({"is_booking_request": True, "fields": {}})
+    llm = service_with({"is_booking_request": True, "fields": {}})
 
-    await service.extract("tomorrow", [])
+    await extract_booking(cast(LLMClient, llm), "tomorrow", [])
 
     assert date.today().isoformat() in llm.sent[0].content
 
 
 async def test_the_extraction_is_deterministic() -> None:
-    service, llm = service_with({"is_booking_request": True, "fields": {}})
+    llm = service_with({"is_booking_request": True, "fields": {}})
 
-    await service.extract("schedule an interview", [])
+    await extract_booking(cast(LLMClient, llm), "schedule an interview", [])
 
     assert llm.calls[0]["temperature"] == 0.0
 
 
 async def test_the_booking_schema_is_the_one_requested() -> None:
-    service, llm = service_with({"is_booking_request": True, "fields": {}})
+    llm = service_with({"is_booking_request": True, "fields": {}})
 
-    await service.extract("schedule an interview", [])
+    await extract_booking(cast(LLMClient, llm), "schedule an interview", [])
 
     assert llm.calls[0]["schema"] is BookingExtraction
 
@@ -205,12 +209,12 @@ async def test_the_booking_schema_is_the_one_requested() -> None:
 async def test_a_date_in_the_past_is_dropped(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    service, _ = service_with(
+    llm = service_with(
         {"is_booking_request": True, "fields": {"interview_date": "2020-01-01"}}
     )
 
     with caplog.at_level(logging.WARNING):
-        result = await service.extract("January 1, 2020", [])
+        result = await extract_booking(cast(LLMClient, llm), "January 1, 2020", [])
 
     assert result.fields.interview_date is None
     assert "date" in missing_fields(result.fields)
@@ -218,11 +222,11 @@ async def test_a_date_in_the_past_is_dropped(
 
 
 async def test_todays_date_is_kept() -> None:
-    service, _ = service_with(
+    llm = service_with(
         {"is_booking_request": True, "fields": {"interview_date": date.today().isoformat()}}
     )
 
-    result = await service.extract("today", [])
+    result = await extract_booking(cast(LLMClient, llm), "today", [])
 
     assert result.fields.interview_date == date.today()
 
@@ -327,10 +331,18 @@ def redis() -> FakeRedis:
 
 @pytest.fixture
 def booking_service(
-    extractor: FakeExtractor, repo: FakeRepository, redis: FakeRedis
+    extractor: FakeExtractor,
+    repo: FakeRepository,
+    redis: FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> BookingService:
+    async def extract(
+        llm: LLMClient, message: str, history: Sequence[ChatMessage]
+    ) -> BookingExtraction:
+        return await extractor.extract(message, history)
+
+    monkeypatch.setattr("app.services.booking_service.extract_booking", extract)
     return BookingService(
-        extractor=cast(BookingExtractor, extractor),
         repo=cast(BookingRepository, repo),
         redis=cast(Redis, redis),
     )
@@ -828,8 +840,8 @@ def test_require_details_rejects_an_incomplete_booking() -> None:
 
 
 async def test_a_cancellation_policy_is_not_a_cancellation() -> None:
-    service, llm = service_with({"is_booking_request": False, "fields": {}})
+    llm = service_with({"is_booking_request": False, "fields": {}})
 
-    await service.extract("what is the cancellation policy?", [])
+    await extract_booking(cast(LLMClient, llm), "what is the cancellation policy?", [])
 
     assert "cancellation policy is not cancelling" in llm.sent[0].content

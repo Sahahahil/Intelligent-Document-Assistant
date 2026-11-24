@@ -15,13 +15,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.integrations.llm import ChatMessage
+from app.integrations.llm import ChatMessage, LLMClient
 from app.models.booking import Booking
 from app.repositories.booking_repository import BookingRepository
 from app.schemas.booking import BookingExtraction, BookingFields
 from app.services.booking_service import (
     DRAFT_PREFIX,
-    BookingExtractor,
     BookingService,
 )
 
@@ -47,10 +46,20 @@ async def extractor() -> ScriptedExtractor:
 
 @pytest.fixture
 async def service(
-    db_session: AsyncSession, redis_client: Redis, extractor: ScriptedExtractor, session_id: str
+    db_session: AsyncSession,
+    redis_client: Redis,
+    extractor: ScriptedExtractor,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[BookingService]:
+    # The state machine calls the module function, so the fake takes its place.
+    async def extract(
+        llm: LLMClient, message: str, history: Sequence[ChatMessage]
+    ) -> BookingExtraction:
+        return await extractor.extract(message, history)
+
+    monkeypatch.setattr("app.services.booking_service.extract_booking", extract)
     booking_service = BookingService(
-        extractor=cast(BookingExtractor, extractor),
         repo=BookingRepository(db_session),
         redis=redis_client,
     )
