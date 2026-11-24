@@ -41,6 +41,13 @@ class BookingRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get(self, booking_id: UUID) -> Booking | None:
+        """One booking by id."""
+        result = await self._session.execute(
+            select(Booking).where(Booking.id == booking_id)
+        )
+        return result.scalar_one_or_none()
+
     async def delete(self, booking_id: UUID) -> None:
         """Remove a booking. The row was the booking, so the slot is free again."""
         await self._session.execute(sa_delete(Booking).where(Booking.id == booking_id))

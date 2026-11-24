@@ -84,12 +84,17 @@ class BookingUpdate(BaseModel):
 
 
 class BookingResponse(BaseModel):
-    """Response for a single booking."""
+    """Response for a single booking.
+
+    A stored booking is always a confirmed one: the row exists because the
+    user confirmed it, and cancelling removes the row.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     name: str
     email: str
     interview_date: date
     interview_time: time
-    status: Literal["pending", "confirmed", "cancelled"]
     created_at: datetime
