@@ -21,6 +21,22 @@ four-step booking wizard.
   collects the details and only writes a row after the user confirms
 - **Light and dark themes**, responsive down to a phone
 
+## Why these tools
+
+The brief left a few choices open; each one was picked against a requirement.
+
+| Area | Choice | Why |
+|---|---|---|
+| Vector store | **Qdrant** | One container, and it also runs embedded in-process, so the tests need no server. Pinecone needs an account and a key; Weaviate and Milvus bring a topology to learn before anything runs. |
+| Metadata | **PostgreSQL** + SQLAlchemy + Alembic | The rule that matters — one interview per slot — is a unique index, so the database enforces it instead of the application. Alembic keeps the schema history reviewable. |
+| Chat memory | **Redis** | Cross-turn state that survives a restart, is shared between workers, and expires on its own TTL. A per-process dict loses the conversation on redeploy. |
+| RAG | **Hand-written** | History → rewrite → embed → retrieve → prompt → answer, one module per stage. Retrieval misses and chunk scores stay visible instead of hidden inside a chain. |
+| Embeddings | **Sentence Transformers** `all-MiniLM-L6-v2` | 384-dim, CPU-only, no API key: ingestion runs offline and cannot fail because the LLM provider is down. |
+| API | **FastAPI** + Pydantic v2 | One model is the schema, the validator and the OpenAPI definition; `Annotated` dependencies are typed injection without a DI container. |
+| PDF text | **PyMuPDF** | Fast and dependency-light, and its block structure keeps paragraphs intact for the recursive chunker. |
+| LLM | **OpenAI SDK**, any compatible `base_url` | One client for OpenAI, Groq, Gemini, Ollama and vLLM — `.env` changes, not code. |
+| Tests | **pytest** + httpx `ASGITransport` | The real app in-process against real PostgreSQL, Redis and Qdrant; no mock of the framework itself. |
+
 ## Tech Stack
 
 ### Backend (apps/api)
