@@ -1,7 +1,6 @@
-"""The chunk contract both chunking strategies implement."""
+"""Chunk data structure and token counting."""
 
 from dataclasses import dataclass
-from typing import Protocol
 from uuid import UUID
 
 from app.models.document import ChunkingStrategy
@@ -18,16 +17,6 @@ class DocumentChunk:
     strategy: ChunkingStrategy
     start_char: int
     end_char: int
-
-
-class Chunker(Protocol):
-    """Splits a document's text into chunks."""
-
-    strategy: ChunkingStrategy
-    chunk_size: int
-    chunk_overlap: int
-
-    def split(self, text: str, *, document_id: UUID) -> list[DocumentChunk]: ...
 
 
 def count_tokens(text: str) -> int:

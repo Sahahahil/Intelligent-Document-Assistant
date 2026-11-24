@@ -108,39 +108,126 @@ class BookingTurn:
     persisted: bool
 
 
-class BookingExtractor:
-    """Reads booking intent and details out of a message."""
+async def extract_booking(
+    llm: LLMClient, message: str, history: Sequence[ChatMessage]
+) -> BookingExtraction:
+    """What the message says about a booking - never raises."""
+    messages = [
+        ChatMessage(
+            role="system",
+            content=EXTRACTION_PROMPT.format(today=date.today().isoformat()),
+        )
+    ]
+    messages.extend(history[-MAX_HISTORY_MESSAGES:])
+    messages.append(ChatMessage(role="user", content=message))
+    try:
+        extraction = await llm.complete_structured(
+            messages=messages, schema=BookingExtraction, temperature=0.0
+        )
+    except Exception:
+        # A failed extraction is not a failed turn - the chat continues
+        # without booking details.
+        logger.warning("Booking extraction failed", exc_info=True)
+        return BookingExtraction()
+    if extraction.fields.interview_date is not None and (
+        extraction.fields.interview_date < date.today()
+    ):
+        logger.warning(
+            "Dropping an interview date in the past: %s", extraction.fields.interview_date
+        )
+        extraction.fields.interview_date = None
+    return extraction
 
-    def __init__(self, llm: LLMClient) -> None:
-        self._llm = llm
 
-    async def extract(self, message: str, history: Sequence[ChatMessage]) -> BookingExtraction:
-        """What the message says about a booking - never raises."""
-        messages = [
-            ChatMessage(
-                role="system",
-                content=EXTRACTION_PROMPT.format(today=date.today().isoformat()),
-            )
-        ]
-        messages.extend(history[-MAX_HISTORY_MESSAGES:])
-        messages.append(ChatMessage(role="user", content=message))
-        try:
-            extraction = await self._llm.complete_structured(
-                messages=messages, schema=BookingExtraction, temperature=0.0
-            )
-        except Exception:
-            # A failed extraction is not a failed turn - the chat continues
-            # without booking details.
-            logger.warning("Booking extraction failed", exc_info=True)
-            return BookingExtraction()
-        if extraction.fields.interview_date is not None and (
-            extraction.fields.interview_date < date.today()
-        ):
-            logger.warning(
-                "Dropping an interview date in the past: %s", extraction.fields.interview_date
-            )
-            extraction.fields.interview_date = None
-        return extraction
+def merge_fields(draft: BookingFields | None, incoming: BookingFields) -> BookingFields:
+    """The new value wins when the user gave one; otherwise keep the old."""
+    base = draft or BookingFields()
+    return BookingFields(
+        name=incoming.name or base.name,
+        email=incoming.email or base.email,
+        interview_date=incoming.interview_date or base.interview_date,
+        interview_time=incoming.interview_time or base.interview_time,
+    )
+
+
+def has_fields(fields: BookingFields) -> bool:
+    return any(
+        value is not None
+        for value in (fields.name, fields.email, fields.interview_date, fields.interview_time)
+    )
+
+
+def clean_message(message: str) -> str:
+    return re.sub(r"[^\w\s']", " ", message.lower()).strip()
+
+
+def is_affirmation(message: str) -> bool:
+    cleaned = clean_message(message)
+    return cleaned in AFFIRMATIONS or cleaned.startswith("yes ")
+
+
+def is_rejection(message: str) -> bool:
+    cleaned = clean_message(message)
+    if cleaned in {"no", "nope", "no thanks", "no thank you"}:
+        return True
+    return any(word in cleaned for word in REJECTION_WORDS)
+
+
+def ask_for(missing: list[str]) -> str:
+    listed = ", ".join(missing[:-1]) + " and " + missing[-1] if len(missing) > 1 else missing[0]
+    return f"Sure - I need your {listed} to schedule the interview."
+
+
+def summary(name: str, email: str, when: date, at: time) -> str:
+    return (
+        f"Here is what I have: Name: {name}, Email: {email}, "
+        f"Date: {when.isoformat()}, Time: {at.strftime('%H:%M')}. "
+        f"Please confirm to book."
+    )
+
+
+def confirmation_text(booking: Booking) -> str:
+    return (
+        f"Your interview request for {booking.interview_date.isoformat()} "
+        f"at {booking.interview_time.strftime('%H:%M')} has been recorded."
+    )
+
+
+def pending_model(
+    fields: BookingFields,
+    *,
+    missing: list[str] | None = None,
+    awaiting_confirmation: bool = False,
+) -> BookingModel:
+    """The booking block for a turn that has not been written yet."""
+    return BookingModel(
+        name=fields.name,
+        email=fields.email,
+        interview_date=fields.interview_date,
+        interview_time=fields.interview_time,
+        status="pending",
+        missing_fields=missing or [],
+        awaiting_confirmation=awaiting_confirmation,
+    )
+
+
+def to_model(
+    booking: Booking, *, status: Literal["confirmed", "cancelled"] = "confirmed"
+) -> BookingModel:
+    return BookingModel(
+        id=booking.id,
+        name=booking.name,
+        email=booking.email,
+        interview_date=booking.interview_date,
+        interview_time=booking.interview_time,
+        status=status,
+        missing_fields=[],
+        awaiting_confirmation=False,
+    )
+
+
+def draft_key(session_id: str) -> str:
+    return f"{DRAFT_PREFIX}{session_id}"
 
 
 class BookingService:
@@ -149,11 +236,9 @@ class BookingService:
     def __init__(
         self,
         *,
-        extractor: BookingExtractor,
         repo: BookingRepository,
         redis: Redis,
     ) -> None:
-        self._extractor = extractor
         self._repo = repo
         self._redis = redis
         self._ttl = get_settings().session_ttl_seconds
@@ -162,13 +247,16 @@ class BookingService:
         self, *, session_id: str, message: str, history: Sequence[ChatMessage]
     ) -> BookingTurn:
         """Run one turn of the booking conversation."""
-        extraction = await self._extractor.extract(message, history)
+        from app.integrations.llm import get_llm_client
+        llm = get_llm_client()
+
+        extraction = await extract_booking(llm, message, history)
         draft = await self.get_draft(session_id)
 
         if extraction.cancels_booking:
             return await self._cancel_booking(session_id, draft)
 
-        if draft is not None and self._is_rejection(message):
+        if draft is not None and is_rejection(message):
             await self.clear_draft(session_id)
             return BookingTurn(
                 is_booking=True,
@@ -180,7 +268,7 @@ class BookingService:
                 persisted=False,
             )
 
-        merged = self._merge(draft, extraction.fields)
+        merged = merge_fields(draft, extraction.fields)
         if merged.interview_date is not None and merged.interview_date < date.today():
             # The draft outlived its date - ask for a new one.
             logger.warning("Dropping a stale interview date: %s", merged.interview_date)
@@ -191,7 +279,7 @@ class BookingService:
             if (
                 not extraction.is_booking_request
                 and draft is None
-                and not self._has_fields(extraction.fields)
+                and not has_fields(extraction.fields)
             ):
                 return BookingTurn(
                     is_booking=False,
@@ -204,8 +292,8 @@ class BookingService:
             await self.save_draft(session_id, merged)
             return BookingTurn(
                 is_booking=True,
-                reply=self._ask_for(missing),
-                booking=self._pending_model(merged, missing=missing),
+                reply=ask_for(missing),
+                booking=pending_model(merged, missing=missing),
                 missing_fields=missing,
                 awaiting_confirmation=False,
                 persisted=False,
@@ -222,15 +310,15 @@ class BookingService:
         # `confirmed_by_user` flag only counts when the turn did not carry the
         # details: a small model sometimes reads "here are my details" as an
         # agreement, and that would write a row nobody confirmed.
-        confirmed = self._is_affirmation(message) or (
+        confirmed = is_affirmation(message) or (
             extraction.confirmed_by_user and merged == draft
         )
         if not confirmed:
             await self.save_draft(session_id, merged)
             return BookingTurn(
                 is_booking=True,
-                reply=self._summary(name, email, when, at),
-                booking=self._pending_model(merged, awaiting_confirmation=True),
+                reply=summary(name, email, when, at),
+                booking=pending_model(merged, awaiting_confirmation=True),
                 missing_fields=[],
                 awaiting_confirmation=True,
                 persisted=False,
@@ -243,8 +331,8 @@ class BookingService:
         await self.clear_draft(session_id)
         return BookingTurn(
             is_booking=True,
-            reply=self._confirmation_text(booking),
-            booking=self._to_model(booking),
+            reply=confirmation_text(booking),
+            booking=to_model(booking),
             missing_fields=[],
             awaiting_confirmation=False,
             persisted=True,
@@ -253,7 +341,7 @@ class BookingService:
     async def get_draft(self, session_id: str) -> BookingFields | None:
         """The details collected so far, if any."""
         async with redis_guard():
-            raw = await self._redis.get(self._draft_key(session_id))
+            raw = await self._redis.get(draft_key(session_id))
         if not raw:
             return None
         return BookingFields.model_validate_json(raw)
@@ -262,13 +350,13 @@ class BookingService:
         """Keep the details collected so far."""
         async with redis_guard():
             await self._redis.set(
-                self._draft_key(session_id), fields.model_dump_json(), ex=self._ttl
+                draft_key(session_id), fields.model_dump_json(), ex=self._ttl
             )
 
     async def clear_draft(self, session_id: str) -> None:
         """Forget the details collected so far."""
         async with redis_guard():
-            await self._redis.delete(self._draft_key(session_id))
+            await self._redis.delete(draft_key(session_id))
 
     async def _persist(
         self, session_id: str, name: str, email: str, when: date, at: time
@@ -307,7 +395,7 @@ class BookingService:
                     "You already have an interview booked for that time - "
                     "I have not booked it twice."
                 ),
-                booking=self._to_model(conflict),
+                booking=to_model(conflict),
                 missing_fields=[],
                 awaiting_confirmation=False,
                 persisted=False,
@@ -317,7 +405,7 @@ class BookingService:
         return BookingTurn(
             is_booking=True,
             reply="That slot is already taken. Which other date and time would suit you?",
-            booking=self._pending_model(trimmed, missing=["date", "time"]),
+            booking=pending_model(trimmed, missing=["date", "time"]),
             missing_fields=["date", "time"],
             awaiting_confirmation=False,
             persisted=False,
@@ -348,99 +436,8 @@ class BookingService:
                 f"Your interview request for {booking.interview_date.isoformat()} "
                 f"at {booking.interview_time.strftime('%H:%M')} has been cancelled."
             ),
-            booking=self._to_model(booking, status="cancelled"),
+            booking=to_model(booking, status="cancelled"),
             missing_fields=[],
             awaiting_confirmation=False,
             persisted=True,
         )
-
-    @staticmethod
-    def _merge(draft: BookingFields | None, incoming: BookingFields) -> BookingFields:
-        """The new value wins when the user gave one; otherwise keep the old."""
-        base = draft or BookingFields()
-        return BookingFields(
-            name=incoming.name or base.name,
-            email=incoming.email or base.email,
-            interview_date=incoming.interview_date or base.interview_date,
-            interview_time=incoming.interview_time or base.interview_time,
-        )
-
-    @staticmethod
-    def _has_fields(fields: BookingFields) -> bool:
-        return any(
-            value is not None
-            for value in (fields.name, fields.email, fields.interview_date, fields.interview_time)
-        )
-
-    @staticmethod
-    def _clean(message: str) -> str:
-        return re.sub(r"[^\w\s']", " ", message.lower()).strip()
-
-    @classmethod
-    def _is_affirmation(cls, message: str) -> bool:
-        cleaned = cls._clean(message)
-        return cleaned in AFFIRMATIONS or cleaned.startswith("yes ")
-
-    @classmethod
-    def _is_rejection(cls, message: str) -> bool:
-        cleaned = cls._clean(message)
-        if cleaned in {"no", "nope", "no thanks", "no thank you"}:
-            return True
-        return any(word in cleaned for word in REJECTION_WORDS)
-
-    @staticmethod
-    def _ask_for(missing: list[str]) -> str:
-        listed = ", ".join(missing[:-1]) + " and " + missing[-1] if len(missing) > 1 else missing[0]
-        return f"Sure - I need your {listed} to schedule the interview."
-
-    @staticmethod
-    def _summary(name: str, email: str, when: date, at: time) -> str:
-        return (
-            f"Here is what I have: Name: {name}, Email: {email}, "
-            f"Date: {when.isoformat()}, Time: {at.strftime('%H:%M')}. "
-            f"Please confirm to book."
-        )
-
-    @staticmethod
-    def _confirmation_text(booking: Booking) -> str:
-        return (
-            f"Your interview request for {booking.interview_date.isoformat()} "
-            f"at {booking.interview_time.strftime('%H:%M')} has been recorded."
-        )
-
-    @staticmethod
-    def _pending_model(
-        fields: BookingFields,
-        *,
-        missing: list[str] | None = None,
-        awaiting_confirmation: bool = False,
-    ) -> BookingModel:
-        """The booking block for a turn that has not been written yet."""
-        return BookingModel(
-            name=fields.name,
-            email=fields.email,
-            interview_date=fields.interview_date,
-            interview_time=fields.interview_time,
-            status="pending",
-            missing_fields=missing or [],
-            awaiting_confirmation=awaiting_confirmation,
-        )
-
-    @staticmethod
-    def _to_model(
-        booking: Booking, *, status: Literal["confirmed", "cancelled"] = "confirmed"
-    ) -> BookingModel:
-        return BookingModel(
-            id=booking.id,
-            name=booking.name,
-            email=booking.email,
-            interview_date=booking.interview_date,
-            interview_time=booking.interview_time,
-            status=status,
-            missing_fields=[],
-            awaiting_confirmation=False,
-        )
-
-    @staticmethod
-    def _draft_key(session_id: str) -> str:
-        return f"{DRAFT_PREFIX}{session_id}"

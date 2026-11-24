@@ -53,7 +53,7 @@ A full-stack RAG-powered document assistant with chat, document management, and 
 git clone <repo-url>
 cd Intelligent_Document_Assistant
 
-# Start all services
+# Start all services (PostgreSQL, Redis, Qdrant)
 docker compose up -d
 
 # Backend (in separate terminal)
@@ -94,26 +94,28 @@ Intelligent_Document_Assistant/
 ├── apps/
 │   ├── api/                 # FastAPI backend
 │   │   ├── app/
-│   │   │   ├── api/         # API routes
+│   │   │   ├── api/         # API routes (v1)
 │   │   │   ├── core/        # Config, exceptions
 │   │   │   ├── db/          # Database models, session
-│   │   │   ├── integrations/ # Qdrant, Redis, LLM
+│   │   │   ├── integrations/ # Qdrant, Redis, LLM clients
 │   │   │   ├── models/      # SQLAlchemy models
 │   │   │   ├── repositories/ # Data access layer
 │   │   │   ├── schemas/     # Pydantic schemas
-│   │   │   └── services/    # Business logic
-│   │   ├── alembic/         # Migrations
-│   │   └── tests/           # Unit & integration tests
+│   │   │   ├── services/    # Business logic
+│   │   │   └── utils/       # PDF/text extraction, chunking
+│   │   ├── alembic/         # Database migrations (shared)
+│   │   └── pyproject.toml   # Python dependencies
 │   │
-│   └── web/                 # Next.js frontend
-│       ├── src/
-│       │   ├── app/         # App Router pages
-│       │   ├── components/  # React components
-│       │   ├── hooks/       # Custom hooks
-│       │   ├── lib/         # Utilities, API client
-│       │   └── components/ui/ # shadcn/ui components
-│       ├── e2e/             # Playwright E2E tests
-│       └── public/
+│   ├── web/                 # Next.js frontend
+│   │   ├── src/
+│   │   │   ├── app/         # App Router pages
+│   │   │   ├── components/  # React components
+│   │   │   ├── hooks/       # Custom hooks
+│   │   │   └── lib/         # Utilities, API client, auth
+│   │   ├── e2e/             # Playwright E2E tests
+│   │   └── public/
+│   │
+│   └── web-e2e/             # E2E test configuration
 │
 ├── packages/
 │   └── shared/              # Shared TypeScript/Zod schemas
@@ -122,12 +124,28 @@ Intelligent_Document_Assistant/
 │           ├── client/      # API client
 │           └── constants/   # Shared constants
 │
+├── tests/                   # Backend tests (unit + integration)
+│   ├── unit/
+│   ├── integration/
+│   └── fakes/
+│
+├── alembic/                 # Database migrations
+│   ├── versions/            # Migration scripts
+│   ├── env.py               # Alembic environment
+│   └── script.py.mako       # Migration template
+│
+├── scripts/                 # Utility scripts
+│   ├── deploy.sh            # Production deployment
+│   ├── docker-entrypoint.sh # Container entrypoint
+│   ├── setup_local.sh       # Local setup helper
+│   └── smoke.sh             # Smoke tests
+│
 ├── .github/workflows/       # GitHub Actions CI/CD
-├── docs/adr/               # Architecture Decision Records
-├── docker-compose.yml      # Local development
-├── docker-compose.prod.yml # Production deployment
-├── nx.json                 # Nx workspace config
-└── package.json            # Root package.json
+├── docker-compose.yml       # Local development
+├── docker-compose.prod.yml  # Production deployment
+├── nginx.conf               # Nginx config (SSL termination)
+├── nx.json                  # Nx workspace config
+└── package.json             # Root package.json (npm workspaces)
 ```
 
 ## API Documentation
@@ -157,12 +175,12 @@ FastAPI provides automatic API documentation:
 ### Running Tests
 
 ```bash
-# Backend tests
+# Backend tests (from apps/api)
 cd apps/api
 uv run pytest tests/unit -v
 uv run pytest tests/integration -v
 
-# Frontend tests
+# Frontend tests (from apps/web)
 cd apps/web
 npm run test          # Unit tests (Vitest)
 npm run test:e2e      # E2E tests (Playwright)
@@ -206,14 +224,6 @@ LLM_MODEL=gpt-4o-mini
 
 The production Docker Compose includes Nginx for SSL termination. Place certificates in `./certs/` and update `nginx.conf`.
 
-## Architecture Decisions
-
-See [ADRs](docs/adr/) for key architectural decisions:
-- ADR 001: Nx Monorepo
-- ADR 002: Next.js Frontend
-- ADR 003: NextAuth.js Authentication
-- ADR 004: SSE Streaming
-
 ## Contributing
 
 1. Fork the repository
@@ -221,7 +231,3 @@ See [ADRs](docs/adr/) for key architectural decisions:
 3. Make your changes
 4. Run tests and linting
 5. Submit a pull request
-
-## License
-
-MIT License - see LICENSE file for details.

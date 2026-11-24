@@ -25,39 +25,37 @@ REWRITE_INSTRUCTION = (
 )
 
 
-class QueryRewriter:
-    """Rewrites a follow-up into a query that retrieves the right chunks."""
+async def rewrite_query(
+    llm: LLMClient,
+    message: str,
+    history: Sequence[ChatMessage],
+) -> str:
+    """The standalone query for `message` - the original message on any failure."""
+    if not history:
+        return message
+    messages = [ChatMessage(role="system", content=REWRITE_INSTRUCTION)]
+    messages.extend(history[-MAX_HISTORY_MESSAGES:])
+    messages.append(ChatMessage(role="user", content=message))
+    try:
+        rewritten = await llm.complete(messages=messages, temperature=0.0)
+    except Exception:
+        # A failed rewrite must not fail the answer - the original message
+        # is a worse query, not a broken request.
+        logger.warning("Query rewriting failed; using the original message", exc_info=True)
+        return message
+    cleaned = _clean(rewritten)
+    if not cleaned:
+        logger.warning("Query rewriting produced an unusable query; using the original message")
+        return message
+    return cleaned
 
-    def __init__(self, llm: LLMClient) -> None:
-        self._llm = llm
 
-    async def rewrite(self, message: str, history: Sequence[ChatMessage]) -> str:
-        """The standalone query for `message` - the original message on any failure."""
-        if not history:
-            return message
-        messages = [ChatMessage(role="system", content=REWRITE_INSTRUCTION)]
-        messages.extend(history[-MAX_HISTORY_MESSAGES:])
-        messages.append(ChatMessage(role="user", content=message))
-        try:
-            rewritten = await self._llm.complete(messages=messages, temperature=0.0)
-        except Exception:
-            # A failed rewrite must not fail the answer - the original message
-            # is a worse query, not a broken request.
-            logger.warning("Query rewriting failed; using the original message", exc_info=True)
-            return message
-        cleaned = self._clean(rewritten)
-        if not cleaned:
-            logger.warning("Query rewriting produced an unusable query; using the original message")
-            return message
-        return cleaned
-
-    @staticmethod
-    def _clean(rewritten: str) -> str:
-        """One line, no quotes, short enough to be a query."""
-        cleaned = rewritten.strip().strip('"').strip()
-        if not cleaned:
-            return ""
-        cleaned = cleaned.splitlines()[0].strip()
-        if len(cleaned) > MAX_OUTPUT_CHARS or not any(char.isalnum() for char in cleaned):
-            return ""
-        return cleaned
+def _clean(rewritten: str) -> str:
+    """One line, no quotes, short enough to be a query."""
+    cleaned = rewritten.strip().strip('"').strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.splitlines()[0].strip()
+    if len(cleaned) > MAX_OUTPUT_CHARS or not any(char.isalnum() for char in cleaned):
+        return ""
+    return cleaned

@@ -34,7 +34,7 @@ qdrant_data/
 *.sqlite3
 dump.rdb
 
-# Logs and logs
+# Logs
 *.log
 *.tmp
 *.bak
@@ -57,7 +57,7 @@ node_modules
 .settings/
 *.sublime-workspace
 
-# IDE - VSCode
+# IDE - VSCode (keep shared config, ignore user-specific)
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
@@ -93,31 +93,25 @@ Thumbs.db
 .github/agents/
 .github/prompts/
 .github/skills/
+.github/instructions/
 opencode.json
 
-# Nx AI migration guides (not needed for runtime)
-tools/ai-migrations/
-
-.nx/cache
-.nx/workspace-data
-.cursor/rules/nx-rules.mdc
-.github/instructions/nx.instructions.md
-
-vite.config.*.timestamp*
-vitest.config.*.timestamp*
-test-output
-
-.claude/worktrees
-.claude/settings.local.json
-.nx/polygraph
-.nx/self-healing
-.nx/migrate-runs
-.vitest
-
-# Nx specific
-*.tsbuildinfo
+# Nx
 .nx/
+*.tsbuildinfo
 
 # Next.js
 .next
 out
+
+# Test output
+test-output
+.vitest
+
+# Timestamp configs
+vite.config.*.timestamp*
+vitest.config.*.timestamp*
+
+# Personal/agent config files (not needed by others)
+AGENTS.md
+CLAUDE.md

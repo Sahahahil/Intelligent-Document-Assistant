@@ -9,7 +9,8 @@ exponential backoff, and never retries a 4xx like 400.
 
 import json
 import logging
-from collections.abc import Iterator, Sequence
+import re
+from collections.abc import Sequence
 from datetime import datetime
 from functools import lru_cache
 from typing import Literal, TypeVar
@@ -46,29 +47,8 @@ _PLACEHOLDER_KEY = "not-configured"
 # it.
 _JSON_MODE_RETRY_STATUSES = frozenset({400, 422, 500})
 
-
-def _balanced_object(text: str, start: int) -> str | None:
-    """The JSON object that starts at `start`, or None if it never closes."""
-    depth = 0
-    for index in range(start, len(text)):
-        char = text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : index + 1]
-    return None
-
-
-def _json_objects(text: str) -> Iterator[str]:
-    """Every JSON object in the text, in order."""
-    for start in range(len(text)):
-        if text[start] != "{":
-            continue
-        candidate = _balanced_object(text, start)
-        if candidate is not None:
-            yield candidate
+# Simple regex to find JSON objects in text (non-greedy match of {...})
+_JSON_OBJECT_PATTERN = re.compile(r"\{[^{}]*\}")
 
 
 class ChatMessage(BaseModel):
@@ -258,7 +238,7 @@ class LLMClient:
         sometimes answers with the schema itself - so every object in the
         answer is tried until one validates.
         """
-        for candidate in _json_objects(text):
+        for candidate in _JSON_OBJECT_PATTERN.findall(text):
             try:
                 payload = json.loads(candidate)
                 schema.model_validate(payload)

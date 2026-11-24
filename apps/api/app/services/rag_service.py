@@ -3,16 +3,18 @@
 Written out by hand — no LangChain, no `RetrievalQAChain`.
 """
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
+from app.core.config import get_settings
 from app.integrations.llm import ChatMessage, LLMClient
 from app.schemas.chat import SourceModel
-from app.integrations.qdrant import RetrievedChunk
-from app.services.query_rewriter import QueryRewriter
-from app.services.retrieval_service import RetrievalService, SourceReference
+from app.integrations.qdrant import RetrievedChunk, VectorStore
+from app.services.embedding_service import EmbeddingService
+from app.services.query_rewriter import rewrite_query
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,19 @@ class RAGAnswer:
     """The answer plus what it was grounded in."""
 
     answer: str
-    sources: list[SourceReference]
+    sources: list["SourceReference"]
     rewritten_query: str
     context_used: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SourceReference:
+    """Where an answer came from — a pointer, not the text."""
+
+    document_id: UUID
+    filename: str
+    chunk_index: int
+    score: float
 
 
 class RAGService:
@@ -57,13 +69,63 @@ class RAGService:
     def __init__(
         self,
         *,
-        retrieval: RetrievalService,
+        vector_store: VectorStore,
+        embedding_service: EmbeddingService,
         llm: LLMClient,
-        rewriter: QueryRewriter | None = None,
     ) -> None:
-        self._retrieval = retrieval
+        self._vector_store = vector_store
+        self._embeddings = embedding_service
         self._llm = llm
-        self._rewriter = rewriter
+
+    async def _retrieve(
+        self,
+        query: str,
+        *,
+        top_k: int | None = None,
+        document_ids: Sequence[UUID] | None = None,
+        score_threshold: float | None = None,
+    ) -> list[RetrievedChunk]:
+        """The chunks that best answer the query, closest first.
+
+        An empty result means the documents do not cover the question — the
+        caller must say so rather than answer from the model's own priors.
+        """
+        if not query or not query.strip():
+            from app.core.exceptions import ValidationError
+            raise ValidationError("Query must not be empty")
+
+        settings = get_settings()
+        limit = settings.top_k if top_k is None else top_k
+        if limit < 1:
+            from app.core.exceptions import ValidationError
+            raise ValidationError("top_k must be at least 1")
+        threshold = settings.score_threshold if score_threshold is None else score_threshold
+
+        # An empty list means "no filter", not "match nothing".
+        ids = list(document_ids) if document_ids else None
+
+        # The same model that embedded the documents must embed the query.
+        vector = await asyncio.to_thread(self._embeddings.embed_query, query)
+        # Qdrant returns the points ordered by descending score.
+        return await self._vector_store.search(
+            vector, top_k=limit, document_ids=ids, score_threshold=threshold
+        )
+
+    async def _prepare(
+        self,
+        message: str,
+        history: Sequence[ChatMessage],
+        document_ids: Sequence[UUID] | None = None,
+    ) -> tuple[str, list[RetrievedChunk], str]:
+        """Common prep for answer/astream: rewrite query, retrieve chunks, build context.
+
+        Returns (prompt, used_chunks, rewritten_query).
+        """
+        rewritten = await rewrite_query(self._llm, message, history)
+        chunks = await self._retrieve(rewritten, document_ids=document_ids)
+        context, used = self._build_context(chunks)
+        prompt = self._build_prompt(message, history, context, bool(used))
+        return prompt, used, rewritten
 
     async def answer(
         self,
@@ -73,10 +135,7 @@ class RAGService:
         document_ids: Sequence[UUID] | None = None,
     ) -> RAGAnswer:
         """Answer one user message, grounded in the retrieved chunks."""
-        rewritten = await self._rewrite(message, history)
-        chunks = await self._retrieval.retrieve(rewritten, document_ids=document_ids)
-        context, used = self._build_context(chunks)
-        prompt = self._build_prompt(message, history, context, bool(used))
+        prompt, used, rewritten = await self._prepare(message, history, document_ids)
         text = await self._llm.complete(
             messages=[
                 ChatMessage(role="system", content=SYSTEM_PROMPT),
@@ -107,10 +166,7 @@ class RAGService:
         document_ids: Sequence[UUID] | None = None,
     ):
         """Stream one user message answer, grounded in the retrieved chunks."""
-        rewritten = await self._rewrite(message, history)
-        chunks = await self._retrieval.retrieve(rewritten, document_ids=document_ids)
-        context, used = self._build_context(chunks)
-        prompt = self._build_prompt(message, history, context, bool(used))
+        prompt, used, rewritten = await self._prepare(message, history, document_ids)
 
         sources = [
             SourceModel(
@@ -134,13 +190,6 @@ class RAGService:
 
         # Yield sources at the end
         yield {"sources": sources, "rewritten_query": rewritten, "context_used": bool(used)}
-
-    async def _rewrite(self, message: str, history: Sequence[ChatMessage]) -> str:
-        """The retrieval query - the original message unless a rewriter is wired."""
-        if self._rewriter is None:
-            return message
-        rewritten = (await self._rewriter.rewrite(message, history)).strip()
-        return rewritten or message
 
     def _build_context(self, chunks: Sequence[RetrievedChunk]) -> tuple[str, list[RetrievedChunk]]:
         """The context block, capped at `MAX_CONTEXT_CHARS`.

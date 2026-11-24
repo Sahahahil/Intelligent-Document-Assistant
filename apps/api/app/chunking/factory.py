@@ -1,11 +1,13 @@
 """The one place that maps a strategy name to a chunker implementation."""
 
-from app.chunking.base import Chunker
 from app.chunking.fixed_chunker import FixedSizeChunker
 from app.chunking.recursive_chunker import RecursiveCharacterChunker
 from app.core.config import get_settings
 from app.core.exceptions import ValidationError
 from app.models.document import ChunkingStrategy
+
+
+Chunker = FixedSizeChunker | RecursiveCharacterChunker
 
 
 def get_chunker(

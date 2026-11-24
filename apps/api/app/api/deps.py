@@ -12,14 +12,12 @@ from app.integrations.qdrant import get_vector_store
 from app.integrations.redis import get_redis_client
 from app.repositories.booking_repository import BookingRepository
 from app.repositories.document_repository import DocumentRepository
-from app.services.booking_service import BookingExtractor, BookingService
+from app.services.booking_service import BookingService
 from app.services.chat_orchestrator import ChatOrchestrator
 from app.services.conversation_service import ConversationStore
 from app.services.embedding_service import get_embedding_service
 from app.services.ingestion_service import IngestionService
-from app.services.query_rewriter import QueryRewriter
 from app.services.rag_service import RAGService
-from app.services.retrieval_service import RetrievalService
 
 
 def get_document_repository(
@@ -56,28 +54,15 @@ def get_conversation_store(
     return ConversationStore(redis)
 
 
-def get_query_rewriter(
-    llm: Annotated[LLMClient, Depends(get_llm_client)],
-) -> QueryRewriter:
-    """The query rewriter for this request."""
-    return QueryRewriter(llm)
-
-
-def get_retrieval_service() -> RetrievalService:
-    """The retrieval service - the vector store and the embedder are singletons."""
-    return RetrievalService(
-        vector_store=get_vector_store(),
-        embedding_service=get_embedding_service(),
-    )
-
-
 def get_rag_service(
-    retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
     llm: Annotated[LLMClient, Depends(get_llm_client)],
-    rewriter: Annotated[QueryRewriter, Depends(get_query_rewriter)],
 ) -> RAGService:
     """The RAG service for this request."""
-    return RAGService(retrieval=retrieval, llm=llm, rewriter=rewriter)
+    return RAGService(
+        vector_store=get_vector_store(),
+        embedding_service=get_embedding_service(),
+        llm=llm,
+    )
 
 
 def get_booking_repository(
@@ -87,20 +72,12 @@ def get_booking_repository(
     return BookingRepository(session)
 
 
-def get_booking_extractor(
-    llm: Annotated[LLMClient, Depends(get_llm_client)],
-) -> BookingExtractor:
-    """The booking extractor for this request."""
-    return BookingExtractor(llm)
-
-
 def get_booking_service(
-    extractor: Annotated[BookingExtractor, Depends(get_booking_extractor)],
     repo: Annotated[BookingRepository, Depends(get_booking_repository)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> BookingService:
     """The booking service for this request."""
-    return BookingService(extractor=extractor, repo=repo, redis=redis)
+    return BookingService(repo=repo, redis=redis)
 
 
 def get_chat_orchestrator(
