@@ -66,26 +66,31 @@ services:
       qdrant: { condition: service_started }
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       retries: 5
       # The first boot downloads the embedding model.
       start_period: 60s
 
   web:
-    build: ./apps/web
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # The rewrite to the API is baked in at build time.
+        NEXT_PUBLIC_API_URL: http://api:8000
     env_file:
       - path: .env
         required: false
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: http://api:8000
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
       NEXTAUTH_URL: http://localhost:3000
     ports: ["3000:3000"]
     depends_on: [api]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:3000"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       retries: 5
       start_period: 30s
