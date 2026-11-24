@@ -56,7 +56,12 @@ async def get_booking(
     return BookingResponse.model_validate(booking)
 
 
-@router.post("", response_model=BookingResponse, status_code=status.HTTP_201_CREATED, summary="Book an interview")
+@router.post(
+    "",
+    response_model=BookingResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Book an interview",
+)
 async def create_booking(
     payload: BookingCreate,
     booking_repo: Annotated[BookingRepository, Depends(get_booking_repository)],

@@ -2,13 +2,17 @@
 
 from collections.abc import Callable, Sequence
 from functools import cached_property, lru_cache
+from typing import TYPE_CHECKING
 
 from app.core.config import get_settings
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 _BATCH_SIZE = 64
 
 
-def _load_model(model_name: str) -> "SentenceTransformer":
+def _load_model(model_name: str) -> SentenceTransformer:
     """Import and instantiate the model.
 
     The import is inside the function on purpose: `torch` is a 2 GB
@@ -52,7 +56,8 @@ class EmbeddingService:
     @property
     def dimension(self) -> int:
         """The vector length of the loaded model (384 for all-MiniLM-L6-v2)."""
-        return int(self._model.get_embedding_dimension())
+        dimension = self._model.get_embedding_dimension()
+        return int(dimension or 0)
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed a batch of texts, in the order they were given."""

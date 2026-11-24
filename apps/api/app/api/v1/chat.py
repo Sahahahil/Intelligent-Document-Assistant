@@ -1,10 +1,10 @@
 """The conversational RAG endpoint."""
 
 import json
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import get_chat_orchestrator
@@ -30,7 +30,7 @@ async def chat_stream(
 ) -> EventSourceResponse:
     """Stream an answer via Server-Sent Events."""
 
-    async def event_generator():
+    async def event_generator() -> AsyncIterator[dict[str, str]]:
         async for item in orchestrator.astream(request):
             yield {"data": json.dumps(item)}
 

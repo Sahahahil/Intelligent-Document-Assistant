@@ -1,7 +1,5 @@
 """JWT token payload schema for NextAuth.js integration."""
 
-from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, EmailStr
 
@@ -11,8 +9,8 @@ class UserClaims(BaseModel):
 
     sub: str
     email: EmailStr
-    name: Optional[str] = None
-    picture: Optional[str] = None
-    iat: Optional[int] = None
-    exp: Optional[int] = None
-    jti: Optional[str] = None
+    name: str | None = None
+    picture: str | None = None
+    iat: int | None = None
+    exp: int | None = None
+    jti: str | None = None

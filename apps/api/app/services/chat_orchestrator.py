@@ -92,8 +92,13 @@ class ChatOrchestrator:
             if isinstance(item, str):
                 parts.append(item)
                 yield {"type": "token", "content": item}
-            elif isinstance(item, dict) and "sources" in item:
-                yield {"type": "sources", "sources": [s.model_dump() for s in item["sources"]]}
+            elif isinstance(item, dict):
+                sources = item.get("sources")
+                if isinstance(sources, list):
+                    yield {
+                        "type": "sources",
+                        "sources": [s.model_dump() for s in sources],
+                    }
 
         await self._store.append(request.session_id, "user", request.message)
         await self._store.append(request.session_id, "assistant", "".join(parts))

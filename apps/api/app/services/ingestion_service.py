@@ -14,6 +14,8 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Coroutine
+from typing import Any
 from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
@@ -53,7 +55,7 @@ _PROGRESS_TTL_SECONDS = 3600
 
 # Tasks are kept referenced here: an asyncio task with no reference can be
 # garbage collected before it finishes.
-_RUNNING: set[asyncio.Task] = set()
+_RUNNING: set[asyncio.Task[Any]] = set()
 
 
 def progress_key(document_id: UUID) -> str:
@@ -61,7 +63,7 @@ def progress_key(document_id: UUID) -> str:
     return f"ingest:{document_id}"
 
 
-def _spawn(coro) -> None:
+def _spawn(coro: Coroutine[Any, Any, None]) -> None:
     """Run a coroutine in the background, and keep it alive."""
     task = asyncio.create_task(coro)
     _RUNNING.add(task)
@@ -267,7 +269,8 @@ class IngestionService:
         raw = await self._redis.get(progress_key(document_id))
         if not raw:
             return None
-        return json.loads(raw)
+        payload: dict[str, object] = json.loads(raw)
+        return payload
 
 
     async def _clear_previous_attempt(self, file_hash: str) -> None:

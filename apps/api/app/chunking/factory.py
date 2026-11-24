@@ -6,7 +6,6 @@ from app.core.config import get_settings
 from app.core.exceptions import ValidationError
 from app.models.document import ChunkingStrategy
 
-
 Chunker = FixedSizeChunker | RecursiveCharacterChunker
 
 

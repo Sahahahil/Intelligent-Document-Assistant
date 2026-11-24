@@ -3,10 +3,10 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.schemas.auth import UserClaims
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -16,7 +16,7 @@ security = HTTPBearer()
 @router.get("/verify", response_model=UserClaims, summary="Validate JWT from NextAuth.js")
 async def verify_token(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
-    settings: Annotated[get_settings, Depends(get_settings)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> UserClaims:
     """Validate a JWT token issued by NextAuth.js using shared HS256 secret."""
     try:
@@ -26,9 +26,9 @@ async def verify_token(
             algorithms=["HS256"],
         )
         return UserClaims(**payload)
-    except JWTError:
+    except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from exc

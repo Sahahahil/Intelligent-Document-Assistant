@@ -10,14 +10,13 @@ exponential backoff, and never retries a 4xx like 400.
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from functools import lru_cache
 from typing import Literal, TypeVar
 
 import httpx2
 from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI, Omit
-from openai.types.chat import ChatCompletionChunk
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -137,7 +136,7 @@ class LLMClient:
         messages: Sequence[ChatMessage],
         temperature: float = 0.0,
         max_tokens: int | None = None,
-    ):
+    ) -> AsyncGenerator[str, None]:
         """Stream the assistant's reply token by token."""
         self._require_configured()
         logger.debug("LLM stream request: model=%s messages=%d", self._model, len(messages))
@@ -238,7 +237,8 @@ class LLMClient:
         sometimes answers with the schema itself - so every object in the
         answer is tried until one validates.
         """
-        for candidate in _JSON_OBJECT_PATTERN.findall(text):
+        for match in _JSON_OBJECT_PATTERN.findall(text):
+            candidate: str = match
             try:
                 payload = json.loads(candidate)
                 schema.model_validate(payload)

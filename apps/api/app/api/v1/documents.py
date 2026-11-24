@@ -2,11 +2,11 @@
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
-from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import get_document_repository, get_ingestion_service
@@ -137,7 +137,7 @@ async def document_status_stream(
 ) -> EventSourceResponse:
     """Stream document processing status via Server-Sent Events."""
 
-    async def event_generator():
+    async def event_generator() -> AsyncIterator[dict[str, str]]:
         while True:
             doc = await document_repo.get(document_id)
             if not doc:

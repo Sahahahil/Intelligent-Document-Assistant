@@ -5,14 +5,14 @@ Written out by hand — no LangChain, no `RetrievalQAChain`.
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
 from app.core.config import get_settings
 from app.integrations.llm import ChatMessage, LLMClient
-from app.schemas.chat import SourceModel
 from app.integrations.qdrant import RetrievedChunk, VectorStore
+from app.schemas.chat import SourceModel
 from app.services.embedding_service import EmbeddingService
 from app.services.query_rewriter import rewrite_query
 
@@ -164,7 +164,7 @@ class RAGService:
         *,
         history: Sequence[ChatMessage] = (),
         document_ids: Sequence[UUID] | None = None,
-    ):
+    ) -> AsyncGenerator[str | dict[str, object], None]:
         """Stream one user message answer, grounded in the retrieved chunks."""
         prompt, used, rewritten = await self._prepare(message, history, document_ids)
 

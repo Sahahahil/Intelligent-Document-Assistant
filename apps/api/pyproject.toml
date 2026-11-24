@@ -42,7 +42,7 @@ plugins = ["pydantic.mypy"]
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["sentence_transformers.*", "qdrant_client.*", "fitz", "pymupdf.*"]
+module = ["sentence_transformers.*", "qdrant_client.*", "fitz", "pymupdf.*", "jose.*"]
 ignore_missing_imports = true
 
 # PyMuPDF ships a py.typed marker but leaves most of its API unannotated;
