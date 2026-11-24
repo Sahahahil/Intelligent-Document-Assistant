@@ -5,6 +5,7 @@ no network. The live fixtures are used by the `integration`-marked tests, which
 are deselected by default.
 """
 
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import uuid4
@@ -15,6 +16,9 @@ from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Add apps/api to Python path so we can import from app
+sys.path.insert(0, str(Path(__file__).parent.parent / "apps" / "api"))
 
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal, engine

@@ -1,0 +1,42 @@
+{
+  "name": "@intelligent-doc-assistant/shared",
+  "version": "0.0.1",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schemas": "./src/schemas/index.ts",
+    "./client": "./src/client/api.ts",
+    "./constants": "./src/constants/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "devDependencies": {
+    "@nx/devkit": "24.0.0",
+    "@nx/js": "24.0.0",
+    "@types/node": "^24.0.0",
+    "typescript": "6.0.3",
+    "vitest": "^5.1.0",
+    "zod": "^3.23.8"
+  },
+  "nx": {
+    "targets": {
+      "test": {
+        "executor": "@nx/vite:test",
+        "outputs": ["{projectRoot}/coverage"]
+      },
+      "typecheck": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "tsc --noEmit"
+        }
+      },
+      "lint": {
+        "executor": "@nx/eslint:lint"
+      }
+    }
+  }
+}
